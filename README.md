@@ -96,17 +96,36 @@ Arguments:
 Options:
   -o, --output FILENAME    Output filename for the report (default: auto-generated)
   -v, --verbose           Enable verbose logging
+  --use-graphql           Use GraphQL API instead of REST API for GitHub operations
   -h, --help              Show help message
+```
+
+### API Mode Selection
+
+JediMaster supports both REST API and GraphQL API for GitHub operations:
+
+- **REST API (default)**: Uses the traditional GitHub REST API via PyGithub
+- **GraphQL API**: Uses GitHub's GraphQL API for more efficient operations
+
+```bash
+# Use REST API (default)
+python jedimaster.py owner/repo
+
+# Use GraphQL API
+python jedimaster.py --use-graphql owner/repo
 ```
 
 ### Examples
 
 ```bash
-# Process a single repository
+# Process a single repository using REST API
 python jedimaster.py microsoft/vscode
 
-# Process multiple repositories with custom output
-python jedimaster.py microsoft/vscode github/copilot -o my_report.json
+# Process multiple repositories with GraphQL API
+python jedimaster.py --use-graphql microsoft/vscode github/copilot
+
+# Process with custom output file and verbose logging
+python jedimaster.py microsoft/vscode github/copilot -o my_report.json --verbose
 
 # Enable verbose logging
 python jedimaster.py microsoft/vscode -v
@@ -114,19 +133,34 @@ python jedimaster.py microsoft/vscode -v
 
 ## How It Works
 
-1. **Issue Fetching**: Retrieves all open issues from specified GitHub repositories
+1. **Issue Fetching**: Retrieves all open issues from specified GitHub repositories using either REST API or GraphQL API
 2. **AI Evaluation**: Uses an LLM-powered "Decider Agent" to evaluate each issue:
    - Analyzes issue title, description, labels, and recent comments
    - Determines if the issue involves concrete coding tasks suitable for Copilot
    - Provides detailed reasoning for the decision
 3. **Assignment**: For suitable issues:
-   - Adds a "github-copilot" label
+   - Tries to assign the "copilot" user as an assignee (if available)
+   - Adds a "github-copilot" label (creates the label if it doesn't exist)
    - Posts a comment indicating AI assignment
    - Skips issues already assigned to Copilot
 4. **Reporting**: Generates a comprehensive JSON report with:
    - Summary statistics
    - Individual issue results with reasoning
    - Error details for any failed operations
+
+### GraphQL vs REST API
+
+**REST API Mode (default)**:
+- Uses the PyGithub library for GitHub API operations
+- Widely supported and well-tested
+- May require multiple API calls for complex operations
+
+**GraphQL API Mode**:
+- Uses GitHub's GraphQL API directly
+- More efficient with fewer API calls
+- Provides more precise data fetching
+- Comments include "(via GraphQL)" to distinguish from REST API assignments
+- Useful for testing the complete GraphQL assignment process
 
 ## Issue Suitability Criteria
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-JediMaster - A tool to automatically assign GitHub issues to GitHub Copilot
-based on LLM evaluation of issue suitability.
+JediMaster GraphQL - A tool to automatically assign GitHub issues to GitHub Copilot
+using GraphQL API instead of REST API.
 """
 
 import os
@@ -12,48 +12,25 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import argparse
 
-from github import Github, GithubException
 from dotenv import load_dotenv
 
 from decider import DeciderAgent
+from graphql_client import GitHubGraphQLClient
+from jedimaster import IssueResult, ProcessingReport
 
 
-@dataclass
-class IssueResult:
-    """Represents the result of processing a single issue."""
-    repo: str
-    issue_number: int
-    title: str
-    url: str
-    status: str  # 'assigned', 'not_assigned', 'already_assigned', 'error'
-    reasoning: Optional[str] = None
-    error_message: Optional[str] = None
-
-
-@dataclass
-class ProcessingReport:
-    """Summary report of the entire processing run."""
-    total_issues: int
-    assigned: int
-    not_assigned: int
-    already_assigned: int
-    errors: int
-    results: List[IssueResult]
-    timestamp: str
-
-
-class JediMaster:
-    """Main class for processing GitHub issues and assigning them to Copilot."""
+class JediMasterGraphQL:
+    """GraphQL-based version of JediMaster for processing GitHub issues."""
     
     def __init__(self, github_token: str, openai_api_key: str):
-        """Initialize JediMaster with required API keys."""
-        self.github = Github(github_token)
+        """Initialize JediMasterGraphQL with required API keys."""
+        self.graphql_client = GitHubGraphQLClient(github_token)
         self.decider = DeciderAgent(openai_api_key)
         self.logger = self._setup_logger()
         
     def _setup_logger(self) -> logging.Logger:
         """Set up logging configuration."""
-        logger = logging.getLogger('jedimaster')
+        logger = logging.getLogger('jedimaster_graphql')
         logger.setLevel(logging.INFO)
         
         if not logger.handlers:
@@ -66,181 +43,210 @@ class JediMaster:
             
         return logger
     
-    def fetch_issues(self, repo_name: str) -> List[Any]:
-        """Fetch all open issues from a GitHub repository."""
+    def fetch_issues(self, repo_name: str) -> List[Dict[str, Any]]:
+        """Fetch all open issues from a GitHub repository using GraphQL."""
         try:
-            repo = self.github.get_repo(repo_name)
-            issues = list(repo.get_issues(state='open'))
-            self.logger.info(f"Fetched {len(issues)} issues from {repo_name}")
+            owner, name = repo_name.split('/')
+            issues = self.graphql_client.get_issues(owner, name)
+            self.logger.info(f"Fetched {len(issues)} issues from {repo_name} using GraphQL")
             return issues
-        except GithubException as e:
-            self.logger.error(f"Error fetching issues from {repo_name}: {e}")
+        except Exception as e:
+            self.logger.error(f"Error fetching issues from {repo_name} using GraphQL: {e}")
             raise
     
-    def is_already_assigned_to_copilot(self, issue) -> bool:
+    def is_already_assigned_to_copilot(self, issue: Dict[str, Any]) -> bool:
         """Check if the issue is already assigned to GitHub Copilot."""
         try:
-            # Check if any assignee contains 'copilot' (case insensitive)
-            for assignee in issue.assignees:
-                if 'copilot' in assignee.login.lower():
+            # Check assignees
+            assignees = issue.get('assignees', {}).get('nodes', [])
+            for assignee in assignees:
+                if 'copilot' in assignee.get('login', '').lower():
                     return True
             
-            # Check labels for copilot-related labels
-            for label in issue.labels:
-                if 'copilot' in label.name.lower():
-                    return True                    
+            # Check labels
+            labels = issue.get('labels', {}).get('nodes', [])
+            for label in labels:
+                if 'copilot' in label.get('name', '').lower():
+                    return True
+                    
             return False
         except Exception as e:
-            self.logger.error(f"Error checking assignment status for issue #{issue.number}: {e}")
+            self.logger.error(f"Error checking assignment status for issue #{issue.get('number', 'unknown')}: {e}")
             return False
     
-    def assign_to_copilot(self, issue) -> bool:
-        """Assign the issue to GitHub Copilot."""
+    def assign_to_copilot_graphql(self, issue: Dict[str, Any], repo_name: str) -> bool:
+        """Assign the issue to GitHub Copilot using GraphQL."""
         try:
-            # Try to find a copilot user/bot in the repository
-            repo = issue.repository
-
-            # Add Copilot as an assignee
+            owner, name = repo_name.split('/')
+            issue_id = issue.get('id')
+            issue_number = issue.get('number')
+            
+            if not issue_id:
+                self.logger.error(f"Issue #{issue_number} missing ID for GraphQL operations")
+                return False
+            
+            # Get repository info for label creation
+            repo_info = self.graphql_client.get_repository_info(owner, name)
+            repo_id = repo_info.get('id')
+            
+            if not repo_id:
+                self.logger.error(f"Could not get repository ID for {repo_name}")
+                return False
+            
+            # Try to assign to Copilot user
+            copilot_user_id = self.graphql_client.get_user_id("copilot")
+            if copilot_user_id:
+                try:
+                    self.graphql_client.add_assignees_to_issue(issue_id, [copilot_user_id])
+                    self.logger.info(f"Successfully added copilot as assignee for issue #{issue_number}")
+                except Exception as e:
+                    self.logger.warning(f"Could not add copilot as assignee for issue #{issue_number}: {e}")
+            else:
+                self.logger.warning(f"Could not find copilot user ID for issue #{issue_number}")
+            
+            # Handle GitHub Copilot label
             try:
-                issue.add_to_assignees("copilot")
-                self.logger.info(f"Successfully added copilot as assignee for issue #{issue.number}")
-            except Exception as e:
-                self.logger.warning(f"Could not add copilot as assignee for issue #{issue.number}: {e}")
-
-            # Add a label indicating this issue is for Copilot
-            try:
-                # Check if the label exists, create if it doesn't
-                copilot_label = None
-                for label in repo.get_labels():
-                    if label.name.lower() == 'github-copilot':
-                        copilot_label = label
+                # Get existing labels
+                existing_labels = self.graphql_client.get_repository_labels(owner, name)
+                copilot_label_id = None
+                
+                # Look for existing github-copilot label
+                for label in existing_labels:
+                    if label.get('name', '').lower() == 'github-copilot':
+                        copilot_label_id = label.get('id')
                         break
-
-                if not copilot_label:
-                    copilot_label = repo.create_label(
+                
+                # Create label if it doesn't exist
+                if not copilot_label_id:
+                    copilot_label_id = self.graphql_client.create_label(
+                        repo_id=repo_id,
                         name="github-copilot",
                         color="0366d6",
                         description="Issue assigned to GitHub Copilot"
                     )
-
+                
                 # Add the label to the issue
-                issue.add_to_labels(copilot_label)
-
+                if copilot_label_id:
+                    self.graphql_client.add_labels_to_issue(issue_id, [copilot_label_id])
+                    self.logger.info(f"Successfully added github-copilot label to issue #{issue_number}")
+                else:
+                    self.logger.warning(f"Could not create or find github-copilot label for issue #{issue_number}")
+                
                 # Add a comment indicating the assignment
                 comment = ("🤖 This issue has been automatically assigned to GitHub Copilot "
-                          "based on LLM evaluation of its suitability for AI assistance.")
-                issue.create_comment(comment)
-
-                self.logger.info(f"Successfully processed issue #{issue.number} for Copilot")
+                          "based on LLM evaluation of its suitability for AI assistance. (via GraphQL)")
+                self.graphql_client.add_comment_to_issue(issue_id, comment)
+                
+                self.logger.info(f"Successfully processed issue #{issue_number} for Copilot using GraphQL")
                 return True
-
-            except GithubException as e:
-                self.logger.error(f"Error processing issue #{issue.number} for Copilot: {e}")
+                
+            except Exception as e:
+                self.logger.error(f"Error processing issue #{issue_number} for Copilot using GraphQL: {e}")
                 return False
-
+                
         except Exception as e:
-            self.logger.error(f"Unexpected error assigning issue #{issue.number}: {e}")
+            self.logger.error(f"Unexpected error assigning issue #{issue.get('number', 'unknown')} using GraphQL: {e}")
             return False
     
-    def process_issue(self, issue, repo_name: str) -> IssueResult:
+    def process_issue(self, issue: Dict[str, Any], repo_name: str) -> IssueResult:
         """Process a single issue and return the result."""
         try:
+            issue_number = issue.get('number', 0)
+            issue_title = issue.get('title', 'Unknown')
+            issue_url = issue.get('url', '')
+            
             # Check if already assigned
             if self.is_already_assigned_to_copilot(issue):
                 return IssueResult(
                     repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    url=issue.html_url,
+                    issue_number=issue_number,
+                    title=issue_title,
+                    url=issue_url,
                     status='already_assigned'
                 )
             
             # Get issue details for the decider
             issue_data = {
-                'title': issue.title,
-                'body': issue.body or '',
-                'labels': [label.name for label in issue.labels],
+                'title': issue_title,
+                'body': issue.get('body', ''),
+                'labels': [label.get('name', '') for label in issue.get('labels', {}).get('nodes', [])],
                 'comments': []
             }
             
-            # Fetch comments (limit to last 10 to avoid too much data)
+            # Extract comments
             try:
-                comments = list(issue.get_comments())[-10:]
-                issue_data['comments'] = [comment.body for comment in comments]
+                comments = issue.get('comments', {}).get('nodes', [])
+                issue_data['comments'] = [comment.get('body', '') for comment in comments]
             except Exception as e:
-                self.logger.warning(f"Could not fetch comments for issue #{issue.number}: {e}")
+                self.logger.warning(f"Could not extract comments for issue #{issue_number}: {e}")
             
             # Use the decider agent to evaluate the issue
             decision_result = self.decider.evaluate_issue(issue_data)
             
             if decision_result['decision'].lower() == 'yes':
-                # Assign to Copilot
-                if self.assign_to_copilot(issue):
+                # Assign to Copilot using GraphQL
+                if self.assign_to_copilot_graphql(issue, repo_name):
                     return IssueResult(
                         repo=repo_name,
-                        issue_number=issue.number,
-                        title=issue.title,
-                        url=issue.html_url,
+                        issue_number=issue_number,
+                        title=issue_title,
+                        url=issue_url,
                         status='assigned',
                         reasoning=decision_result['reasoning']
                     )
                 else:
                     return IssueResult(
                         repo=repo_name,
-                        issue_number=issue.number,
-                        title=issue.title,
-                        url=issue.html_url,
+                        issue_number=issue_number,
+                        title=issue_title,
+                        url=issue_url,
                         status='error',
                         reasoning=decision_result['reasoning'],
-                        error_message='Failed to assign to Copilot'
+                        error_message='Failed to assign to Copilot using GraphQL'
                     )
             else:
                 return IssueResult(
                     repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    url=issue.html_url,
+                    issue_number=issue_number,
+                    title=issue_title,
+                    url=issue_url,
                     status='not_assigned',
                     reasoning=decision_result['reasoning']
                 )
                 
         except Exception as e:
-            error_msg = f"Error processing issue #{issue.number}: {e}"
+            error_msg = f"Error processing issue using GraphQL: {e}"
             self.logger.error(error_msg)
             return IssueResult(
                 repo=repo_name,
-                issue_number=issue.number,
-                title=getattr(issue, 'title', 'Unknown'),
-                url=getattr(issue, 'html_url', ''),
+                issue_number=issue.get('number', 0),
+                title=issue.get('title', 'Unknown'),
+                url=issue.get('url', ''),
                 status='error',
                 error_message=error_msg
             )
     
     def process_repositories(self, repo_names: List[str]) -> ProcessingReport:
-        """Process all issues from the given repositories."""
+        """Process all issues from the given repositories using GraphQL."""
         all_results = []
         
         for repo_name in repo_names:
-            self.logger.info(f"Processing repository: {repo_name}")
+            self.logger.info(f"Processing repository using GraphQL: {repo_name}")
             
             try:
                 issues = self.fetch_issues(repo_name)
                 
                 for issue in issues:
-                    # Skip pull requests (GitHub API returns PRs as issues)
-                    if issue.pull_request:
-                        continue
-                        
                     result = self.process_issue(issue, repo_name)
                     all_results.append(result)
                     
             except Exception as e:
-                self.logger.error(f"Failed to process repository {repo_name}: {e}")
+                self.logger.error(f"Failed to process repository {repo_name} using GraphQL: {e}")
                 # Add an error result for the repository
                 all_results.append(IssueResult(
                     repo=repo_name,
                     issue_number=0,
-                    title=f"Repository Error: {repo_name}",
+                    title=f"Repository Error: {repo_name} (GraphQL)",
                     url='',
                     status='error',
                     error_message=str(e)
@@ -269,18 +275,18 @@ class JediMaster:
         out_filename: str
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            out_filename = f"jedimaster_report_{timestamp}.json"
+            out_filename = f"jedimaster_graphql_report_{timestamp}.json"
         else:
             out_filename = filename
         with open(out_filename, 'w') as f:
             json.dump(asdict(report), f, indent=2, ensure_ascii=False)
-        self.logger.info(f"Report saved to {out_filename}")
+        self.logger.info(f"GraphQL report saved to {out_filename}")
         return out_filename
     
     def print_summary(self, report: ProcessingReport):
         """Print a summary of the processing results."""
         print("\n" + "="*60)
-        print("JEDIMASTER PROCESSING SUMMARY")
+        print("JEDIMASTER GRAPHQL PROCESSING SUMMARY")
         print("="*60)
         print(f"Timestamp: {report.timestamp}")
         print(f"Total Issues Processed: {report.total_issues}")
@@ -291,7 +297,7 @@ class JediMaster:
         print("="*60)
         
         if report.assigned > 0:
-            print("\nISSUES ASSIGNED TO COPILOT:")
+            print("\nISSUES ASSIGNED TO COPILOT (via GraphQL):")
             for result in report.results:
                 if result.status == 'assigned':
                     print(f"  • {result.repo}#{result.issue_number}: {result.title}")
@@ -308,16 +314,14 @@ class JediMaster:
 
 
 def main():
-    """Main entry point for the JediMaster script."""
-    parser = argparse.ArgumentParser(description='JediMaster - Assign GitHub issues to Copilot')
+    """Main entry point for the JediMaster GraphQL script."""
+    parser = argparse.ArgumentParser(description='JediMaster GraphQL - Assign GitHub issues to Copilot using GraphQL')
     parser.add_argument('repositories', nargs='+', 
                        help='GitHub repositories to process (format: owner/repo)')
     parser.add_argument('--output', '-o', 
                        help='Output filename for the report (default: auto-generated)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
-    parser.add_argument('--use-graphql', action='store_true',
-                       help='Use GraphQL API instead of REST API for GitHub operations')
     
     args = parser.parse_args()
     
@@ -340,27 +344,21 @@ def main():
     
     # Set up logging level
     if args.verbose:
-        logging.getLogger('jedimaster').setLevel(logging.DEBUG)
+        logging.getLogger('jedimaster_graphql').setLevel(logging.DEBUG)
     
     try:
-        # Choose implementation based on arguments
-        if args.use_graphql:
-            from jedimaster_graphql import JediMasterGraphQL
-            print("Using GraphQL API for GitHub operations...")
-            jedimaster = JediMasterGraphQL(github_token, openai_api_key)
-        else:
-            print("Using REST API for GitHub operations...")
-            jedimaster = JediMaster(github_token, openai_api_key)
+        # Initialize JediMaster GraphQL
+        jedimaster = JediMasterGraphQL(github_token, openai_api_key)
         
         # Process repositories
-        print(f"Processing {len(args.repositories)} repositories...")
+        print(f"Processing {len(args.repositories)} repositories using GraphQL...")
         report = jedimaster.process_repositories(args.repositories)
         
         # Save and display results
         filename = jedimaster.save_report(report, args.output)
         jedimaster.print_summary(report)
         
-        print(f"\nDetailed report saved to: {filename}")
+        print(f"\nDetailed GraphQL report saved to: {filename}")
         return 0
         
     except Exception as e:
