@@ -88,8 +88,7 @@ class JediMaster:
             # Check labels for copilot-related labels
             for label in issue.labels:
                 if 'copilot' in label.name.lower():
-                    return True
-                    
+                    return True                    
             return False
         except Exception as e:
             self.logger.error(f"Error checking assignment status for issue #{issue.number}: {e}")
@@ -100,7 +99,14 @@ class JediMaster:
         try:
             # Try to find a copilot user/bot in the repository
             repo = issue.repository
-            
+
+            # Add Copilot as an assignee
+            try:
+                issue.add_to_assignees("copilot")
+                self.logger.info(f"Successfully added copilot as assignee for issue #{issue.number}")
+            except Exception as e:
+                self.logger.warning(f"Could not add copilot as assignee for issue #{issue.number}: {e}")
+
             # Add a label indicating this issue is for Copilot
             try:
                 # Check if the label exists, create if it doesn't
@@ -109,29 +115,29 @@ class JediMaster:
                     if label.name.lower() == 'github-copilot':
                         copilot_label = label
                         break
-                
+
                 if not copilot_label:
                     copilot_label = repo.create_label(
                         name="github-copilot",
                         color="0366d6",
                         description="Issue assigned to GitHub Copilot"
                     )
-                
+
                 # Add the label to the issue
                 issue.add_to_labels(copilot_label)
-                
+
                 # Add a comment indicating the assignment
                 comment = ("🤖 This issue has been automatically assigned to GitHub Copilot "
                           "based on LLM evaluation of its suitability for AI assistance.")
                 issue.create_comment(comment)
-                
-                self.logger.info(f"Successfully assigned issue #{issue.number} to Copilot")
+
+                self.logger.info(f"Successfully processed issue #{issue.number} for Copilot")
                 return True
-                
+
             except GithubException as e:
-                self.logger.error(f"Error assigning issue #{issue.number} to Copilot: {e}")
+                self.logger.error(f"Error processing issue #{issue.number} for Copilot: {e}")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"Unexpected error assigning issue #{issue.number}: {e}")
             return False
@@ -258,17 +264,18 @@ class JediMaster:
         
         return report
     
-    def save_report(self, report: ProcessingReport, filename: str = None) -> str:
+    def save_report(self, report: ProcessingReport, filename: Optional[str] = None) -> str:
         """Save the processing report to a JSON file."""
+        out_filename: str
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"jedimaster_report_{timestamp}.json"
-        
-        with open(filename, 'w') as f:
+            out_filename = f"jedimaster_report_{timestamp}.json"
+        else:
+            out_filename = filename
+        with open(out_filename, 'w') as f:
             json.dump(asdict(report), f, indent=2, ensure_ascii=False)
-        
-        self.logger.info(f"Report saved to {filename}")
-        return filename
+        self.logger.info(f"Report saved to {out_filename}")
+        return out_filename
     
     def print_summary(self, report: ProcessingReport):
         """Print a summary of the processing results."""
@@ -289,7 +296,8 @@ class JediMaster:
                 if result.status == 'assigned':
                     print(f"  • {result.repo}#{result.issue_number}: {result.title}")
                     print(f"    URL: {result.url}")
-                    print(f"    Reasoning: {result.reasoning[:100]}...")
+                    if result.reasoning:
+                        print(f"    Reasoning: {result.reasoning[:100]}...")
                     print()
         
         if report.errors > 0:
