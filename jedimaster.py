@@ -47,12 +47,13 @@ class ProcessingReport:
 class JediMaster:
     """Main class for processing GitHub issues and assigning them to Copilot."""
     
-    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False):
+    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False, use_topic_filter: bool = True):
         """Initialize JediMaster with required API keys."""
         self.github_token = github_token
         self.github = Github(github_token)
         self.decider = DeciderAgent(openai_api_key)
         self.just_label = just_label
+        self.use_topic_filter = use_topic_filter
         self.logger = self._setup_logger()
         
     def _setup_logger(self) -> logging.Logger:
@@ -429,9 +430,39 @@ class JediMaster:
                 error_message=error_msg
             )
     
+    def _repo_has_topic(self, repo, topic: str) -> bool:
+        """
+        Check if a repository has a specific topic.
+        This is much faster than file existence checks as topics are already loaded.
+        """
+        try:
+            topics = repo.get_topics()
+            return topic in topics
+        except Exception as e:
+            self.logger.warning(f"Error checking topics in {repo.full_name}: {e}")
+            return False
+
+    def _file_exists_in_repo(self, repo, file_path: str) -> bool:
+        """
+        Efficiently check if a file exists in a repository using HEAD request.
+        This is much faster than get_contents() as it doesn't download file content.
+        """
+        try:
+            # Use HEAD request to check file existence without downloading content
+            url = f"https://api.github.com/repos/{repo.full_name}/contents/{file_path}"
+            headers = {
+                "Authorization": f"Bearer {self.github_token}",
+                "Accept": "application/vnd.github.v3+json"
+            }
+            response = requests.head(url, headers=headers)
+            return response.status_code == 200
+        except Exception as e:
+            self.logger.warning(f"Error checking {file_path} in {repo.full_name}: {e}")
+            return False
+
     def process_user(self, username: str) -> ProcessingReport:
         """
-        Process all repositories for a given user that contain a .coding_agent file.
+        Process all repositories for a given user based on the configured filter method.
         
         Args:
             username: GitHub username to process
@@ -439,33 +470,31 @@ class JediMaster:
         Returns:
             ProcessingReport: Summary of all issues processed across user's repositories
         """
-        self.logger.info(f"Processing user: {username}")
+        filter_method = "topic 'managed-by-coding-agent'" if self.use_topic_filter else ".coding_agent file"
+        self.logger.info(f"Processing user: {username} (filtering by {filter_method})")
         
         try:
             # Get all repositories for the user
             user = self.github.get_user(username)
             all_repos = user.get_repos()
             
-            # Filter repositories that contain .coding_agent file
-            repos_with_coding_agent = []
+            # Filter repositories based on configured method
+            filtered_repos = []
             
             for repo in all_repos:
-                try:
-                    # Check if .coding_agent file exists at root
-                    repo.get_contents(".coding_agent")
-                    repos_with_coding_agent.append(repo.full_name)
-                    self.logger.info(f"Found .coding_agent in repository: {repo.full_name}")
-                except GithubException as e:
-                    # File not found (404) or other error - skip this repo
-                    if e.status != 404:
-                        self.logger.warning(f"Error checking .coding_agent in {repo.full_name}: {e}")
-                    continue
-                except Exception as e:
-                    self.logger.warning(f"Unexpected error checking .coding_agent in {repo.full_name}: {e}")
-                    continue
-            
-            if not repos_with_coding_agent:
-                self.logger.info(f"No repositories found with .coding_agent file for user {username}")
+                if self.use_topic_filter:
+                    # Use topic-based filtering (faster)
+                    if self._repo_has_topic(repo, "managed-by-coding-agent"):
+                        filtered_repos.append(repo.full_name)
+                        self.logger.info(f"Found topic 'managed-by-coding-agent' in repository: {repo.full_name}")
+                else:
+                    # Use file-based filtering (slower but backwards compatible)
+                    if self._file_exists_in_repo(repo, ".coding_agent"):
+                        filtered_repos.append(repo.full_name)
+                        self.logger.info(f"Found .coding_agent file in repository: {repo.full_name}")            
+            if not filtered_repos:
+                filter_desc = "topic 'managed-by-coding-agent'" if self.use_topic_filter else ".coding_agent file"
+                self.logger.info(f"No repositories found with {filter_desc} for user {username}")
                 return ProcessingReport(
                     total_issues=0,
                     assigned=0,
@@ -477,10 +506,11 @@ class JediMaster:
                     timestamp=datetime.now().isoformat()
                 )
             
-            self.logger.info(f"Found {len(repos_with_coding_agent)} repositories with .coding_agent file")
+            filter_desc = "topic 'managed-by-coding-agent'" if self.use_topic_filter else ".coding_agent file"
+            self.logger.info(f"Found {len(filtered_repos)} repositories with {filter_desc}")
             
             # Process the filtered repositories
-            return self.process_repositories(repos_with_coding_agent)
+            return self.process_repositories(filtered_repos)
             
         except GithubException as e:
             error_msg = f"Error accessing user {username}: {e}"
@@ -635,7 +665,7 @@ def main():
     group.add_argument('repositories', nargs='*', 
                        help='GitHub repositories to process (format: owner/repo)')
     group.add_argument('--user', '-u', 
-                       help='GitHub username to process (will process all repos with .coding_agent file)')
+                       help='GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)')
     
     parser.add_argument('--output', '-o', 
                        help='Output filename for the report (default: auto-generated)')
@@ -643,6 +673,8 @@ def main():
                        help='Enable verbose logging')
     parser.add_argument('--just-label', action='store_true',
                        help='Only add labels to issues, do not assign them to Copilot')
+    parser.add_argument('--use-file-filter', action='store_true',
+                       help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
     
     args = parser.parse_args()
     
@@ -671,9 +703,9 @@ def main():
     if args.verbose:
         logging.getLogger('jedimaster').setLevel(logging.DEBUG)
     
-    try:
-        # Initialize JediMaster
-        jedimaster = JediMaster(github_token, openai_api_key, just_label=args.just_label)
+    try:        # Initialize JediMaster
+        use_topic_filter = not args.use_file_filter  # Default to topic filtering unless file filtering is explicitly requested
+        jedimaster = JediMaster(github_token, openai_api_key, just_label=args.just_label, use_topic_filter=use_topic_filter)
         
         # Process based on input type
         if args.user:
