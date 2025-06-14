@@ -4,6 +4,7 @@ Example usage of JediMaster as a library.
 """
 
 import os
+import argparse
 from dotenv import load_dotenv
 from jedimaster import JediMaster
 
@@ -79,6 +80,17 @@ def populate_repo_with_issues():
 def main():
     """Example of using JediMaster programmatically."""
     
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Example usage of JediMaster')
+    parser.add_argument('--just-label', action='store_true', default=True,
+                       help='Only add labels to issues, do not assign them (default: True)')
+    parser.add_argument('--assign', action='store_true',
+                       help='Assign issues to Copilot instead of just labeling')
+    args = parser.parse_args()
+    
+    # Determine just_label value (--assign overrides the default)
+    just_label = not args.assign if args.assign else args.just_label
+    
     # Load environment variables from .env file (if it exists)
     load_dotenv()
     
@@ -90,9 +102,12 @@ def main():
         print("Please set GITHUB_TOKEN and OPENAI_API_KEY environment variables")
         print("Either in a .env file or as system environment variables")
         return
+          # Initialize JediMaster
+    jedimaster = JediMaster(github_token, openai_api_key, just_label=just_label)
     
-    # Initialize JediMaster
-    jedimaster = JediMaster(github_token, openai_api_key)
+    # Show which mode we're using
+    mode = "labeling only" if just_label else "assigning"
+    print(f"JediMaster mode: {mode}")
     
     # Example repositories (replace with your own)
     repositories = [

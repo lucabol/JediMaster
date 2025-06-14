@@ -26,7 +26,7 @@ class IssueResult:
     issue_number: int
     title: str
     url: str
-    status: str  # 'assigned', 'not_assigned', 'already_assigned', 'error'
+    status: str  # 'assigned', 'not_assigned', 'already_assigned', 'labeled', 'error'
     reasoning: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -38,6 +38,7 @@ class ProcessingReport:
     assigned: int
     not_assigned: int
     already_assigned: int
+    labeled: int
     errors: int
     results: List[IssueResult]
     timestamp: str
@@ -46,11 +47,12 @@ class ProcessingReport:
 class JediMaster:
     """Main class for processing GitHub issues and assigning them to Copilot."""
     
-    def __init__(self, github_token: str, openai_api_key: str):
+    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False):
         """Initialize JediMaster with required API keys."""
         self.github_token = github_token
         self.github = Github(github_token)
         self.decider = DeciderAgent(openai_api_key)
+        self.just_label = just_label
         self.logger = self._setup_logger()
         
     def _setup_logger(self) -> logging.Logger:
@@ -295,6 +297,43 @@ class JediMaster:
             self.logger.error(f"Unexpected error assigning issue #{issue.number}: {e}")
             return False
     
+    def add_copilot_label(self, issue) -> bool:
+        """Add the GitHub Copilot label to an issue without assigning it."""
+        try:
+            repo = issue.repository
+            
+            # Check if the label exists, create if it doesn't
+            copilot_label = None
+            for label in repo.get_labels():
+                if label.name.lower() == 'github-copilot':
+                    copilot_label = label
+                    break
+
+            if not copilot_label:
+                copilot_label = repo.create_label(
+                    name="github-copilot",
+                    color="0366d6",
+                    description="Issue suitable for GitHub Copilot"
+                )
+
+            # Add the label to the issue
+            issue.add_to_labels(copilot_label)
+
+            # Add a comment indicating the labeling
+            comment = ("🤖 This issue has been automatically labeled for GitHub Copilot "
+                      "based on LLM evaluation of its suitability for AI assistance.")
+            issue.create_comment(comment)
+
+            self.logger.info(f"Successfully labeled issue #{issue.number} for Copilot")
+            return True
+
+        except GithubException as e:
+            self.logger.error(f"Error labeling issue #{issue.number} for Copilot: {e}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error labeling issue #{issue.number}: {e}")
+            return False
+    
     def process_issue(self, issue, repo_name: str) -> IssueResult:
         """Process a single issue and return the result."""
         try:
@@ -322,31 +361,52 @@ class JediMaster:
                 issue_data['comments'] = [comment.body for comment in comments]
             except Exception as e:
                 self.logger.warning(f"Could not fetch comments for issue #{issue.number}: {e}")
-            
-            # Use the decider agent to evaluate the issue
+              # Use the decider agent to evaluate the issue
             decision_result = self.decider.evaluate_issue(issue_data)
             
             if decision_result['decision'].lower() == 'yes':
-                # Assign to Copilot
-                if self.assign_to_copilot(issue):
-                    return IssueResult(
-                        repo=repo_name,
-                        issue_number=issue.number,
-                        title=issue.title,
-                        url=issue.html_url,
-                        status='assigned',
-                        reasoning=decision_result['reasoning']
-                    )
+                if self.just_label:
+                    # Just add label, don't assign
+                    if self.add_copilot_label(issue):
+                        return IssueResult(
+                            repo=repo_name,
+                            issue_number=issue.number,
+                            title=issue.title,
+                            url=issue.html_url,
+                            status='labeled',
+                            reasoning=decision_result['reasoning']
+                        )
+                    else:
+                        return IssueResult(
+                            repo=repo_name,
+                            issue_number=issue.number,
+                            title=issue.title,
+                            url=issue.html_url,
+                            status='error',
+                            reasoning=decision_result['reasoning'],
+                            error_message='Failed to label for Copilot'
+                        )
                 else:
-                    return IssueResult(
-                        repo=repo_name,
-                        issue_number=issue.number,
-                        title=issue.title,
-                        url=issue.html_url,
-                        status='error',
-                        reasoning=decision_result['reasoning'],
-                        error_message='Failed to assign to Copilot'
-                    )
+                    # Assign to Copilot
+                    if self.assign_to_copilot(issue):
+                        return IssueResult(
+                            repo=repo_name,
+                            issue_number=issue.number,
+                            title=issue.title,
+                            url=issue.html_url,
+                            status='assigned',
+                            reasoning=decision_result['reasoning']
+                        )
+                    else:
+                        return IssueResult(
+                            repo=repo_name,
+                            issue_number=issue.number,
+                            title=issue.title,
+                            url=issue.html_url,
+                            status='error',
+                            reasoning=decision_result['reasoning'],
+                            error_message='Failed to assign to Copilot'
+                        )
             else:
                 return IssueResult(
                     repo=repo_name,
@@ -398,11 +458,11 @@ class JediMaster:
                     status='error',
                     error_message=str(e)
                 ))
-        
-        # Generate summary report
+          # Generate summary report
         assigned_count = sum(1 for r in all_results if r.status == 'assigned')
         not_assigned_count = sum(1 for r in all_results if r.status == 'not_assigned')
         already_assigned_count = sum(1 for r in all_results if r.status == 'already_assigned')
+        labeled_count = sum(1 for r in all_results if r.status == 'labeled')
         error_count = sum(1 for r in all_results if r.status == 'error')
         
         report = ProcessingReport(
@@ -410,6 +470,7 @@ class JediMaster:
             assigned=assigned_count,
             not_assigned=not_assigned_count,
             already_assigned=already_assigned_count,
+            labeled=labeled_count,
             errors=error_count,
             results=all_results,
             timestamp=datetime.now().isoformat()
@@ -438,6 +499,7 @@ class JediMaster:
         print(f"Timestamp: {report.timestamp}")
         print(f"Total Issues Processed: {report.total_issues}")
         print(f"Assigned to Copilot: {report.assigned}")
+        print(f"Labeled for Copilot: {report.labeled}")
         print(f"Not Assigned: {report.not_assigned}")
         print(f"Already Assigned: {report.already_assigned}")
         print(f"Errors: {report.errors}")
@@ -447,10 +509,20 @@ class JediMaster:
             print("\nISSUES ASSIGNED TO COPILOT:")
             for result in report.results:
                 if result.status == 'assigned':
+                    print(f"  - {result.repo}#{result.issue_number}: {result.title}")
+                    print(f"    URL: {result.url}")
+                    if result.reasoning:
+                        print(f"    Reasoning: {result.reasoning}")
+                    print()
+        
+        if report.labeled > 0:
+            print("\nISSUES LABELED FOR COPILOT:")
+            for result in report.results:
+                if result.status == 'labeled':
                     print(f"  • {result.repo}#{result.issue_number}: {result.title}")
                     print(f"    URL: {result.url}")
                     if result.reasoning:
-                        print(f"    Reasoning: {result.reasoning[:100]}...")
+                        print(f"    Reasoning: {result.reasoning}")
                     print()
         
         if report.errors > 0:
@@ -462,13 +534,15 @@ class JediMaster:
 
 def main():
     """Main entry point for the JediMaster script."""
-    parser = argparse.ArgumentParser(description='JediMaster - Assign GitHub issues to Copilot')
+    parser = argparse.ArgumentParser(description='JediMaster - Label or assign GitHub issues to Copilot')
     parser.add_argument('repositories', nargs='+', 
                        help='GitHub repositories to process (format: owner/repo)')
     parser.add_argument('--output', '-o', 
                        help='Output filename for the report (default: auto-generated)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
+    parser.add_argument('--just-label', action='store_true',
+                       help='Only add labels to issues, do not assign them to Copilot')
     
     args = parser.parse_args()
     
@@ -493,9 +567,8 @@ def main():
     if args.verbose:
         logging.getLogger('jedimaster').setLevel(logging.DEBUG)
     
-    try:
-        # Initialize JediMaster
-        jedimaster = JediMaster(github_token, openai_api_key)
+    try:        # Initialize JediMaster
+        jedimaster = JediMaster(github_token, openai_api_key, just_label=args.just_label)
         
         # Process repositories
         print(f"Processing {len(args.repositories)} repositories...")
