@@ -20,7 +20,7 @@ def test_imports():
         import openai
         from dotenv import load_dotenv
         from github import Github
-        print("✅ All required packages imported successfully")
+        print("All required packages imported successfully")
         return True
     except ImportError as e:
         print(f"❌ Import error: {e}")
@@ -61,7 +61,7 @@ def test_decider_agent():
             
             assert result["decision"] == "yes"
             assert "reasoning" in result
-            print("✅ DeciderAgent test passed")
+            print("DeciderAgent test passed")
             return True
             
     except Exception as e:
@@ -90,12 +90,13 @@ def test_jedimaster_class():
             assigned=1,
             not_assigned=0,
             already_assigned=0,
+            labeled=0,
             errors=0,
             results=[result],
             timestamp="2025-06-13T00:00:00"
         )
         
-        print("✅ JediMaster class structure test passed")
+        print("JediMaster class structure test passed")
         return True
         
     except Exception as e:
@@ -120,7 +121,7 @@ def test_environment_example():
                 print(f"❌ Required environment variable {var} not found in .env.example")
                 return False
         
-        print("✅ Environment example file test passed")
+        print("Environment example file test passed")
         return True
         
     except Exception as e:
@@ -129,7 +130,7 @@ def test_environment_example():
 
 def main():
     """Run all tests."""
-    print("🧪 Running JediMaster validation tests...\n")
+    print("Running JediMaster validation tests...\n")
     
     tests = [
         test_imports,
@@ -150,7 +151,7 @@ def main():
     print(f"Test Results: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! JediMaster is ready to use.")
+        print("All tests passed! JediMaster is ready to use.")
         print("\nNext steps:")
         print("1. Copy .env.example to .env")
         print("2. Add your GitHub and OpenAI API keys to .env")
