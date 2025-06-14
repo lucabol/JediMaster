@@ -87,14 +87,18 @@ def main():
                        help='Assign issues to Copilot instead of just labeling')
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
+    parser.add_argument('--repos', type=str, default='lucabol/Hello-World',
+                       help='Comma-separated list of repositories to process (default: lucabol/Hello-World)')
+    parser.add_argument('--user', type=str, default=None,
+                       help='Process all repositories for a given user (overrides --repos if provided)')
     args = parser.parse_args()
-    
+
     # Determine just_label value (--assign overrides the default)
     just_label = not args.assign if args.assign else args.just_label
-    
+
     # Determine filtering method
     use_topic_filter = not args.use_file_filter  # Default to topic filtering unless file filtering is explicitly requested
-    
+
     # Load environment variables from .env file (if it exists)
     load_dotenv()
     
@@ -115,13 +119,16 @@ def main():
     print(f"JediMaster mode: {mode}")
     print(f"Filtering method: {filter_method}")
     
-    # Process user 'lucabol'
-    username = "lucabol"
-    print(f"Processing user: {username}")
-    print(f"Looking for repositories with {filter_method}...")
-    
-    # Process user repositories
-    report = jedimaster.process_user(username)
+    # Decide processing mode
+    if args.user:
+        username = args.user
+        print(f"Processing user: {username}")
+        print(f"Looking for repositories with {filter_method}...")
+        report = jedimaster.process_user(username)
+    else:
+        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        print(f"Processing repositories: {repo_names}")
+        report = jedimaster.process_repositories(repo_names)
     
     # Save report
     filename = jedimaster.save_report(report, "example_report.json")

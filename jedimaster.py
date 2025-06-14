@@ -409,6 +409,24 @@ class JediMaster:
                             error_message='Failed to assign to Copilot'
                         )
             else:
+                # Add 'no-github-copilot' label if not assigned
+                try:
+                    repo = issue.repository
+                    no_copilot_label = None
+                    for label in repo.get_labels():
+                        if label.name.lower() == 'no-github-copilot':
+                            no_copilot_label = label
+                            break
+                    if not no_copilot_label:
+                        no_copilot_label = repo.create_label(
+                            name="no-github-copilot",
+                            color="ededed",
+                            description="Issue not suitable for GitHub Copilot"
+                        )
+                    issue.add_to_labels(no_copilot_label)
+                    self.logger.info(f"Added 'no-github-copilot' label to issue #{issue.number}")
+                except Exception as e:
+                    self.logger.warning(f"Could not add 'no-github-copilot' label to issue #{issue.number}: {e}")
                 return IssueResult(
                     repo=repo_name,
                     issue_number=issue.number,
