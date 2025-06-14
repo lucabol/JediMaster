@@ -409,7 +409,7 @@ class JediMaster:
                             error_message='Failed to assign to Copilot'
                         )
             else:
-                # Add 'no-github-copilot' label if not assigned
+                # Add 'no-github-copilot' label if not assigned, fail with error if labeling fails
                 try:
                     repo = issue.repository
                     no_copilot_label = None
@@ -425,16 +425,25 @@ class JediMaster:
                         )
                     issue.add_to_labels(no_copilot_label)
                     self.logger.info(f"Added 'no-github-copilot' label to issue #{issue.number}")
+                    return IssueResult(
+                        repo=repo_name,
+                        issue_number=issue.number,
+                        title=issue.title,
+                        url=issue.html_url,
+                        status='not_assigned',
+                        reasoning=decision_result['reasoning']
+                    )
                 except Exception as e:
-                    self.logger.warning(f"Could not add 'no-github-copilot' label to issue #{issue.number}: {e}")
-                return IssueResult(
-                    repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    url=issue.html_url,
-                    status='not_assigned',
-                    reasoning=decision_result['reasoning']
-                )
+                    self.logger.error(f"Could not add 'no-github-copilot' label to issue #{issue.number}: {e}")
+                    return IssueResult(
+                        repo=repo_name,
+                        issue_number=issue.number,
+                        title=issue.title,
+                        url=issue.html_url,
+                        status='error',
+                        reasoning=decision_result['reasoning'],
+                        error_message=f"Failed to add 'no-github-copilot' label: {e}"
+                    )
                 
         except Exception as e:
             error_msg = f"Error processing issue #{issue.number}: {e}"
