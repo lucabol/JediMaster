@@ -102,23 +102,21 @@ def main():
         print("Please set GITHUB_TOKEN and OPENAI_API_KEY environment variables")
         print("Either in a .env file or as system environment variables")
         return
-          # Initialize JediMaster
+    
+    # Initialize JediMaster
     jedimaster = JediMaster(github_token, openai_api_key, just_label=just_label)
     
     # Show which mode we're using
     mode = "labeling only" if just_label else "assigning"
     print(f"JediMaster mode: {mode}")
     
-    # Example repositories (replace with your own)
-    repositories = [
-        "lucabol/Hello-World",  # Public test repository
-        # Add more repositories here
-    ]
+    # Process user 'lucabol' - will find all repos with .coding_agent file
+    username = "lucabol"
+    print(f"Processing user: {username}")
+    print("Looking for repositories with .coding_agent file...")
     
-    print(f"Processing {len(repositories)} repositories...")
-    
-    # Process repositories
-    report = jedimaster.process_repositories(repositories)
+    # Process user repositories
+    report = jedimaster.process_user(username)
     
     # Save report
     filename = jedimaster.save_report(report, "example_report.json")

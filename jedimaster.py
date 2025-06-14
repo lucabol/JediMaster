@@ -429,6 +429,100 @@ class JediMaster:
                 error_message=error_msg
             )
     
+    def process_user(self, username: str) -> ProcessingReport:
+        """
+        Process all repositories for a given user that contain a .coding_agent file.
+        
+        Args:
+            username: GitHub username to process
+            
+        Returns:
+            ProcessingReport: Summary of all issues processed across user's repositories
+        """
+        self.logger.info(f"Processing user: {username}")
+        
+        try:
+            # Get all repositories for the user
+            user = self.github.get_user(username)
+            all_repos = user.get_repos()
+            
+            # Filter repositories that contain .coding_agent file
+            repos_with_coding_agent = []
+            
+            for repo in all_repos:
+                try:
+                    # Check if .coding_agent file exists at root
+                    repo.get_contents(".coding_agent")
+                    repos_with_coding_agent.append(repo.full_name)
+                    self.logger.info(f"Found .coding_agent in repository: {repo.full_name}")
+                except GithubException as e:
+                    # File not found (404) or other error - skip this repo
+                    if e.status != 404:
+                        self.logger.warning(f"Error checking .coding_agent in {repo.full_name}: {e}")
+                    continue
+                except Exception as e:
+                    self.logger.warning(f"Unexpected error checking .coding_agent in {repo.full_name}: {e}")
+                    continue
+            
+            if not repos_with_coding_agent:
+                self.logger.info(f"No repositories found with .coding_agent file for user {username}")
+                return ProcessingReport(
+                    total_issues=0,
+                    assigned=0,
+                    not_assigned=0,
+                    already_assigned=0,
+                    labeled=0,
+                    errors=0,
+                    results=[],
+                    timestamp=datetime.now().isoformat()
+                )
+            
+            self.logger.info(f"Found {len(repos_with_coding_agent)} repositories with .coding_agent file")
+            
+            # Process the filtered repositories
+            return self.process_repositories(repos_with_coding_agent)
+            
+        except GithubException as e:
+            error_msg = f"Error accessing user {username}: {e}"
+            self.logger.error(error_msg)
+            return ProcessingReport(
+                total_issues=0,
+                assigned=0,
+                not_assigned=0,
+                already_assigned=0,
+                labeled=0,
+                errors=1,
+                results=[IssueResult(
+                    repo=f"user/{username}",
+                    issue_number=0,
+                    title=f"User Error: {username}",
+                    url='',
+                    status='error',
+                    error_message=error_msg
+                )],
+                timestamp=datetime.now().isoformat()
+            )
+        except Exception as e:
+            error_msg = f"Unexpected error processing user {username}: {e}"
+            self.logger.error(error_msg)
+            return ProcessingReport(
+                total_issues=0,
+                assigned=0,
+                not_assigned=0,
+                already_assigned=0,
+                labeled=0,
+                errors=1,
+                results=[IssueResult(
+                    repo=f"user/{username}",
+                    issue_number=0,
+                    title=f"User Error: {username}",
+                    url='',
+                    status='error',
+                    error_message=error_msg
+                )],
+                timestamp=datetime.now().isoformat()
+            )
+
     def process_repositories(self, repo_names: List[str]) -> ProcessingReport:
         """Process all issues from the given repositories."""
         all_results = []
@@ -535,8 +629,14 @@ class JediMaster:
 def main():
     """Main entry point for the JediMaster script."""
     parser = argparse.ArgumentParser(description='JediMaster - Label or assign GitHub issues to Copilot')
-    parser.add_argument('repositories', nargs='+', 
+    
+    # Create mutually exclusive group for repositories vs user
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('repositories', nargs='*', 
                        help='GitHub repositories to process (format: owner/repo)')
+    group.add_argument('--user', '-u', 
+                       help='GitHub username to process (will process all repos with .coding_agent file)')
+    
     parser.add_argument('--output', '-o', 
                        help='Output filename for the report (default: auto-generated)')
     parser.add_argument('--verbose', '-v', action='store_true',
@@ -545,6 +645,10 @@ def main():
                        help='Only add labels to issues, do not assign them to Copilot')
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if not args.user and not args.repositories:
+        parser.error("Either specify repositories or use --user option")
     
     # Load environment variables from .env file (if it exists)
     load_dotenv()
@@ -567,12 +671,17 @@ def main():
     if args.verbose:
         logging.getLogger('jedimaster').setLevel(logging.DEBUG)
     
-    try:        # Initialize JediMaster
+    try:
+        # Initialize JediMaster
         jedimaster = JediMaster(github_token, openai_api_key, just_label=args.just_label)
         
-        # Process repositories
-        print(f"Processing {len(args.repositories)} repositories...")
-        report = jedimaster.process_repositories(args.repositories)
+        # Process based on input type
+        if args.user:
+            print(f"Processing user: {args.user}")
+            report = jedimaster.process_user(args.user)
+        else:
+            print(f"Processing {len(args.repositories)} repositories...")
+            report = jedimaster.process_repositories(args.repositories)
         
         # Save and display results
         filename = jedimaster.save_report(report, args.output)
