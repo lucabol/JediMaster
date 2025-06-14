@@ -73,9 +73,38 @@ def populate_repo_with_issues():
         ("Add support for voice-driven code editing in hello.c", "Integrate a feature that lets users edit hello.c using voice commands, including code insertion, navigation, and refactoring."),
         ("Create a plugin system for extending hello.c functionality", "Design and implement a plugin architecture so that external developers can add new features or transformations to hello.c without modifying the core file directly."),
     ]
+
+    expected_issues = len(copilot_issues) + len(non_copilot_issues)
     for title, body in copilot_issues + non_copilot_issues:
         ok, err = create_github_issue(github_token, owner, repo, title, body)
         print(f"Created issue '{title}': {'OK' if ok else 'FAILED'}{f' - {err}' if err else ''}")
+
+    # Wait until all issues are present in the repo
+    import time
+    def get_open_issues_count(token, owner, repo):
+        url = f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=100"
+        headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            print(f"Failed to fetch issues: {response.status_code} {response.text}")
+            return None
+        # Exclude pull requests
+        issues = [issue for issue in response.json() if 'pull_request' not in issue]
+        return len(issues)
+
+    print(f"Waiting for all {expected_issues} issues to appear in the repo...")
+    retries = 0
+    while True:
+        count = get_open_issues_count(github_token, owner, repo)
+        if count is not None and count >= expected_issues:
+            print(f"All {expected_issues} issues are now present in the repo.")
+            break
+        retries += 1
+        if retries > 20:
+            print(f"Timeout waiting for issues to appear. Only {count} found.")
+            break
+        print(f"Found {count} issues, waiting...")
+        time.sleep(2)
 
 def main():
     """Example of using JediMaster programmatically."""
