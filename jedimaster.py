@@ -1,3 +1,34 @@
+def process_issues_api(input_data: dict) -> dict:
+    """API function to process all issues from a list of repositories via Azure Functions or other callers."""
+    github_token = os.getenv('GITHUB_TOKEN')
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    if not github_token or not openai_api_key:
+        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    jm = JediMaster(github_token, openai_api_key)
+    repo_names = input_data.get('repo_names')
+    if not repo_names or not isinstance(repo_names, list):
+        return {"error": "Missing or invalid repo_names (should be a list) in input"}
+    try:
+        report = jm.process_repositories(repo_names)
+        return asdict(report)
+    except Exception as e:
+        return {"error": str(e)}
+
+def process_user_api(input_data: dict) -> dict:
+    """API function to process all repositories for a user via Azure Functions or other callers."""
+    github_token = os.getenv('GITHUB_TOKEN')
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    if not github_token or not openai_api_key:
+        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    jm = JediMaster(github_token, openai_api_key)
+    username = input_data.get('username')
+    if not username:
+        return {"error": "Missing username in input"}
+    try:
+        report = jm.process_user(username)
+        return asdict(report)
+    except Exception as e:
+        return {"error": str(e)}
 #!/usr/bin/env python3
 """
 JediMaster - A tool to automatically assign GitHub issues to GitHub Copilot
