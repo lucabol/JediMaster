@@ -1,34 +1,3 @@
-def process_issues_api(input_data: dict) -> dict:
-    """API function to process all issues from a list of repositories via Azure Functions or other callers."""
-    github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    if not github_token or not openai_api_key:
-        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
-    jm = JediMaster(github_token, openai_api_key)
-    repo_names = input_data.get('repo_names')
-    if not repo_names or not isinstance(repo_names, list):
-        return {"error": "Missing or invalid repo_names (should be a list) in input"}
-    try:
-        report = jm.process_repositories(repo_names)
-        return asdict(report)
-    except Exception as e:
-        return {"error": str(e)}
-
-def process_user_api(input_data: dict) -> dict:
-    """API function to process all repositories for a user via Azure Functions or other callers."""
-    github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    if not github_token or not openai_api_key:
-        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
-    jm = JediMaster(github_token, openai_api_key)
-    username = input_data.get('username')
-    if not username:
-        return {"error": "Missing username in input"}
-    try:
-        report = jm.process_user(username)
-        return asdict(report)
-    except Exception as e:
-        return {"error": str(e)}
 #!/usr/bin/env python3
 """
 JediMaster - A tool to automatically assign GitHub issues to GitHub Copilot
@@ -784,6 +753,62 @@ def main():
         print(f"Fatal error: {e}")
         return 1
 
+def process_issues_api(input_data: dict) -> dict:
+    """API function to process all issues from a list of repositories via Azure Functions or other callers."""
+    github_token = os.getenv('GITHUB_TOKEN')
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    if not github_token or not openai_api_key:
+        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    try:
+        just_label = _get_issue_action_from_env()
+    except Exception as e:
+        return {"error": str(e)}
+    jm = JediMaster(github_token, openai_api_key, just_label=just_label)
+    repo_names = input_data.get('repo_names')
+    if not repo_names or not isinstance(repo_names, list):
+        return {"error": "Missing or invalid repo_names (should be a list) in input"}
+    try:
+        report = jm.process_repositories(repo_names)
+        return asdict(report)
+    except Exception as e:
+        return {"error": str(e)}
+
+def process_user_api(input_data: dict) -> dict:
+    """API function to process all repositories for a user via Azure Functions or other callers."""
+    github_token = os.getenv('GITHUB_TOKEN')
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    if not github_token or not openai_api_key:
+        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    try:
+        just_label = _get_issue_action_from_env()
+    except Exception as e:
+        return {"error": str(e)}
+    jm = JediMaster(github_token, openai_api_key, just_label=just_label)
+    username = input_data.get('username')
+    if not username:
+        return {"error": "Missing username in input"}
+    try:
+        report = jm.process_user(username)
+        return asdict(report)
+    except Exception as e:
+        return {"error": str(e)}
+def _get_issue_action_from_env() -> bool:
+    """
+    Retrieve and validate the ISSUE_ACTION environment variable.
+    Returns True if action is 'label', False if 'assign'.
+    Raises ValueError for invalid values.
+    If not set, defaults to 'label'.
+    """
+    action = os.getenv('ISSUE_ACTION')
+    if action is None:
+        return True  # Default to labeling
+    action = action.strip().lower()
+    if action == 'label':
+        return True
+    elif action == 'assign':
+        return False
+    else:
+        raise ValueError(f"Invalid ISSUE_ACTION: {action}. Must be 'assign' or 'label'.")
 
 if __name__ == '__main__':
     exit(main())
