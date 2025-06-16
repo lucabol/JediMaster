@@ -87,3 +87,24 @@ def TimerProcessUser(myTimer: func.TimerRequest) -> None:
     input_data = {'username': username}
     result = process_user_api(input_data)
     logging.info(f'ProcessUser result: {result}')
+
+@app.timer_trigger(schedule="0 2 * * * *", arg_name="myTimerRepos", run_on_startup=False, use_monitor=False)
+def TimerProcessRepos(myTimerRepos: func.TimerRequest) -> None:
+    if myTimerRepos.past_due:
+        logging.info('The timer is past due!')
+
+    logging.info('Python timer trigger function (repos) executed.')
+
+    import os
+    repos_env = os.getenv('TIMER_REPOS')
+    if not repos_env:
+        logging.error('TIMER_REPOS environment variable not set.')
+        return
+    # Support comma-separated list
+    repo_names = [r.strip() for r in repos_env.split(',') if r.strip()]
+    if not repo_names:
+        logging.error('TIMER_REPOS environment variable is empty or invalid.')
+        return
+    input_data = {'repo_names': repo_names}
+    result = process_issues_api(input_data)
+    logging.info(f'ProcessRepos result: {result}')
