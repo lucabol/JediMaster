@@ -69,3 +69,21 @@ def ProcessUser(req: func.HttpRequest) -> func.HttpResponse:
         status_code=200,
         mimetype="application/json"
     )
+
+@app.timer_trigger(schedule="0 1 * * * *", arg_name="myTimer", run_on_startup=False,
+              use_monitor=False) 
+def TimerProcessRepo(myTimer: func.TimerRequest) -> None:
+    
+    if myTimer.past_due:
+        logging.info('The timer is past due!')
+
+    logging.info('Python timer trigger function executed.')
+
+    import os
+    username = os.getenv('TIMER_USERNAME')
+    if not username:
+        logging.error('TIMER_USERNAME environment variable not set.')
+        return
+    input_data = {'username': username}
+    result = process_user_api(input_data)
+    logging.info(f'ProcessUser result: {result}')
