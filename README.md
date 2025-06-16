@@ -29,15 +29,17 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
    pip install -r requirements.txt
    ```
 
-3. **Set up environment variables:**
-   - `GITHUB_TOKEN`: GitHub Personal Access Token with `repo` permissions
-   - `OPENAI_API_KEY`: OpenAI API key
+
+   - `TIMER_USERNAME` (optional): Used by timer-triggered Azure Functions to specify the GitHub username whose repositories should be processed on schedule.
+     - Example: `TIMER_USERNAME=github-username`
+     - Only needed for timer-based automation; not required for manual/scripted runs.
 
    You can use a `.env` file or set them in your shell:
    ```bash
    # .env file (recommended for development)
    GITHUB_TOKEN=your_github_token
    OPENAI_API_KEY=your_openai_api_key
+   ISSUE_ACTION=assign   # or label (default: label)
 
    # Or set in your shell
    export GITHUB_TOKEN=your_github_token
