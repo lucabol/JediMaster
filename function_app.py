@@ -70,7 +70,7 @@ def ProcessUser(req: func.HttpRequest) -> func.HttpResponse:
         mimetype="application/json"
     )
 
-@app.timer_trigger(schedule="0 1 * * * *", arg_name="myTimer", run_on_startup=False,
+@app.timer_trigger(schedule="0 0 1 * * *", arg_name="myTimer", run_on_startup=False,
               use_monitor=False) 
 def TimerProcessUser(myTimer: func.TimerRequest) -> None:
     
@@ -88,7 +88,7 @@ def TimerProcessUser(myTimer: func.TimerRequest) -> None:
     result = process_user_api(input_data)
     logging.info(f'ProcessUser result: {result}')
 
-@app.timer_trigger(schedule="0 2 * * * *", arg_name="myTimerRepos", run_on_startup=False, use_monitor=False)
+@app.timer_trigger(schedule="0 0 1 * * *", arg_name="myTimerRepos", run_on_startup=False, use_monitor=False)
 def TimerProcessRepos(myTimerRepos: func.TimerRequest) -> None:
     if myTimerRepos.past_due:
         logging.info('The timer is past due!')
