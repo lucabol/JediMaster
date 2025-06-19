@@ -39,7 +39,10 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
    # .env file (recommended for development)
    GITHUB_TOKEN=your_github_token
    OPENAI_API_KEY=your_openai_api_key
+
    ISSUE_ACTION=assign   # or label (default: label)
+   TIMER_USERNAME=github-username
+   TIMER_REPOS=owner/repo1,owner/repo2
 
    # Or set in your shell
    export GITHUB_TOKEN=your_github_token
@@ -137,9 +140,10 @@ Invoke-RestMethod -Uri "http://localhost:7071/api/ProcessUser" -Method Post -Bod
 
 ---
 
+
 ## License
 
-[Add your license here]
+This project is licensed under the [MIT License](LICENSE).
 
 ---
 
