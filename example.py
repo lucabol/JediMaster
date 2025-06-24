@@ -116,6 +116,8 @@ def main():
                        help='Assign issues to Copilot instead of just labeling')
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
+    parser.add_argument('--process-prs', action='store_true',
+                       help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
     parser.add_argument('--repos', type=str, default='lucabol/Hello-World',
                        help='Comma-separated list of repositories to process (default: lucabol/Hello-World)')
     parser.add_argument('--user', type=str, default=None,
@@ -130,17 +132,23 @@ def main():
 
     # Load environment variables from .env file (if it exists)
     load_dotenv()
-    
+
     # Get API keys from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
     openai_api_key = os.getenv('OPENAI_API_KEY')
-    
+
     if not github_token or not openai_api_key:
         print("Please set GITHUB_TOKEN and OPENAI_API_KEY environment variables")
         print("Either in a .env file or as system environment variables")
         return
-      # Initialize JediMaster
-    jedimaster = JediMaster(github_token, openai_api_key, just_label=just_label, use_topic_filter=use_topic_filter)
+    # Initialize JediMaster
+    jedimaster = JediMaster(
+        github_token,
+        openai_api_key,
+        just_label=just_label,
+        use_topic_filter=use_topic_filter,
+        process_prs=args.process_prs
+    )
     
     # Show which mode we're using
     mode = "labeling only" if just_label else "assigning"

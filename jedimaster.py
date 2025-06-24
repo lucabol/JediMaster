@@ -141,9 +141,6 @@ class JediMaster:
         self.process_prs = process_prs
         self.logger = self._setup_logger()
 
-    # All methods from the previous JediMaster class, properly indented:
-    # (Below is a placeholder comment. The actual code should include all methods such as process_pull_requests, _setup_logger, _graphql_request, process_user, process_repositories, save_report, print_summary, etc., as previously defined.)
-
     def process_pull_requests(self, repo_name: str):
         results = []
         try:
@@ -151,8 +148,15 @@ class JediMaster:
             pulls = list(repo.get_pulls(state='open'))
             self.logger.info(f"Fetched {len(pulls)} open PRs from {repo_name}")
             for pr in pulls:
-                assigned_to_copilot = any('copilot' in (assignee.login or '').lower() for assignee in pr.assignees)
-                if assigned_to_copilot:
+                # Only process PRs that are in 'Waiting for review' state, approximated by having requested reviewers
+                waiting_for_review = False
+                try:
+                    reviewers = list(getattr(pr, 'requested_reviewers', []))
+                    team_reviewers = list(getattr(pr, 'requested_teams', []))
+                    waiting_for_review = bool(reviewers or team_reviewers)
+                except Exception as e:
+                    self.logger.warning(f"Could not determine reviewers for PR #{pr.number}: {e}")
+                if not waiting_for_review:
                     continue
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
@@ -168,6 +172,7 @@ class JediMaster:
                 except Exception as e:
                     self.logger.warning(f"Could not get diff for PR #{pr.number}: {e}")
                 result = self.pr_decider.evaluate_pr(pr_text)
+                print(result)
                 if 'comment' in result:
                     try:
                         pr.create_issue_comment(result['comment'])
@@ -176,8 +181,8 @@ class JediMaster:
                     except Exception as e:
                         self.logger.error(f"Failed to comment on PR #{pr.number}: {e}")
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
-                elif result.get('decision') == 'check-in':
-                    self.logger.info(f"PR #{pr.number} in {repo_name} can be checked in as-is.")
+                elif result.get('decision') == 'accept':
+                    self.logger.info(f"PR #{pr.number} in {repo_name} can be accepted as-is.")
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'check-in'})
                 else:
                     self.logger.warning(f"Unexpected PRDeciderAgent result for PR #{pr.number}: {result}")

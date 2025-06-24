@@ -141,14 +141,15 @@ class PRDeciderAgent:
         self.model = model
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
-            "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
-            "Given the full text of a pull request (including title, description, and code changes), "
-            "analyze whether the PR is ready to be checked in as-is, or if it needs feedback. "
-            "Respond with a JSON object containing either:\n"
-            "- 'decision': 'check-in' if the PR can be merged as-is, or\n"
-            "- 'comment': a string with constructive feedback to be inserted as a PR comment if changes are needed.\n"
-            "Be concise, specific, and actionable in your feedback. Only return 'decision' if the PR is truly ready."
-        )
+    "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
+    "Respond with a JSON object containing either:\n"
+    "- 'decision': 'accept' if the PR can be merged as-is, or\n"
+    "- 'comment': a string with constructive feedback to be inserted as a PR comment if changes are needed.\n"
+    "Given the full text of a pull request (including title, description, and code changes):\n"
+    "- If the PR has plenty of comments in the code changes, reply with {'decision': 'accept'}.\n"
+    "- If the PR title does NOT has plenty of comments in the code changes, reply with {'comment': 'Please add more comments to your code changes.'}.\n"
+    "Ensure your response is a valid JSON object with either 'decision' or 'comment'"
+)
 
     def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""
@@ -160,15 +161,16 @@ class PRDeciderAgent:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,  # type: ignore
-                temperature=0.1,
+                temperature=0.5,
                 max_tokens=500,
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content
+            
             if result_text is None:
                 raise ValueError("LLM returned empty response")
             result = json.loads(result_text)
-            if not (('decision' in result and result['decision'] == 'check-in') or 'comment' in result):
+            if not (("decision" in result and result["decision"] == "accept") or "comment" in result):
                 raise ValueError("LLM response missing required fields: must have 'decision' or 'comment'")
             self.logger.debug(f"LLM PR review result: {result}")
             return result
