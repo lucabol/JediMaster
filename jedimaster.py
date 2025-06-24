@@ -51,6 +51,96 @@ class ProcessingReport:
 
 # Main class for processing GitHub issues and PRs for Copilot
 class JediMaster:
+    def _get_issue_id_and_bot_id(self, repo_owner: str, repo_name: str, issue_number: int) -> tuple[Optional[str], Optional[str]]:
+        """Get the GitHub node ID for an issue and find the Copilot bot using suggestedActors."""
+        query = """
+        query($owner: String!, $name: String!, $issueNumber: Int!) {
+          repository(owner: $owner, name: $name) {
+            issue(number: $issueNumber) {
+              id
+            }
+            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+              nodes {
+                login
+                __typename
+                ... on Bot {
+                  id
+                }
+                ... on User {
+                  id
+                }
+              }
+            }
+          }
+        }
+        """
+        variables = {
+            "owner": repo_owner,
+            "name": repo_name,
+            "issueNumber": issue_number
+        }
+        try:
+            result = self._graphql_request(query, variables)
+            if "errors" in result:
+                self.logger.error(f"GraphQL errors: {result['errors']}")
+                return None, None
+            data = result["data"]
+            issue_id = data["repository"]["issue"]["id"]
+            bot_id = None
+            suggested_actors = data["repository"]["suggestedActors"]["nodes"]
+            for actor in suggested_actors:
+                login = actor["login"]
+                if login == "copilot-swe-agent" or "copilot" in login.lower():
+                    bot_id = actor["id"]
+                    self.logger.info(f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})")
+                    break
+            if not bot_id:
+                self.logger.warning(f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}")
+                if suggested_actors:
+                    actor_logins = [actor["login"] for actor in suggested_actors]
+                    self.logger.info(f"Available suggested actors: {actor_logins}")
+                else:
+                    self.logger.info("No suggested actors found - Copilot may not be enabled for this repository")
+            return issue_id, bot_id
+        except Exception as e:
+            self.logger.error(f"Error getting issue and bot IDs: {e}")
+            return None, None
+
+    def _assign_issue_via_graphql(self, issue_id: str, bot_id: str) -> bool:
+        """Assign an issue to a bot using GraphQL mutation."""
+        mutation = """
+        mutation($assignableId: ID!, $actorIds: [ID!]!) {
+          replaceActorsForAssignable(input: {assignableId: $assignableId, actorIds: $actorIds}) {
+            assignable {
+              ... on Issue {
+                id
+                title
+                assignees(first: 10) {
+                  nodes {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        variables = {
+            "assignableId": issue_id,
+            "actorIds": [bot_id]
+        }
+        try:
+            result = self._graphql_request(mutation, variables)
+            if "errors" in result:
+                self.logger.error(f"GraphQL mutation errors: {result['errors']}")
+                return False
+            assignees = result["data"]["replaceActorsForAssignable"]["assignable"]["assignees"]["nodes"]
+            assigned_logins = [assignee["login"] for assignee in assignees]
+            self.logger.info(f"Successfully assigned issue. Current assignees: {assigned_logins}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error assigning issue via GraphQL: {e}")
+            return False
     def _repo_has_topic(self, repo, topic: str) -> bool:
         """Check if a repository has a specific topic."""
         try:
@@ -88,12 +178,24 @@ class JediMaster:
                 )
             # Evaluate with DeciderAgent
             result = self.decider.evaluate_issue({'title': issue.title, 'body': issue.body or ''})
-            if result.get('assign'):
+            if result.get('decision', '').lower() == 'yes':
                 if not self.just_label:
                     try:
-                        copilot_user = self.github.get_user('github-copilot[bot]')
-                        issue.add_to_assignees(copilot_user)
-                        status = 'assigned'
+                        repo = issue.repository
+                        repo_full_name = repo.full_name.split('/')
+                        repo_owner = repo_full_name[0]
+                        repo_name_only = repo_full_name[1]
+                        issue_id, bot_id = self._get_issue_id_and_bot_id(repo_owner, repo_name_only, issue.number)
+                        if issue_id and bot_id:
+                            success = self._assign_issue_via_graphql(issue_id, bot_id)
+                            if success:
+                                status = 'assigned'
+                            else:
+                                self.logger.warning(f"GraphQL assignment failed for issue #{issue.number}")
+                                status = 'labeled'
+                        else:
+                            self.logger.warning(f"Could not find issue ID or suitable bot for issue #{issue.number}")
+                            status = 'labeled'
                     except Exception as e:
                         self.logger.warning(f"Failed to assign Copilot to issue #{issue.number}: {e}")
                         status = 'labeled'
