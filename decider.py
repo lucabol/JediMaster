@@ -10,14 +10,14 @@ from openai import OpenAI
 
 class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
-    
+    # ...existing code...
+
     def __init__(self, openai_api_key: str, model: str = "gpt-3.5-turbo"):
-        """Initialize the DeciderAgent with OpenAI API key."""
+        # ...existing code...
         self.client = OpenAI(api_key=openai_api_key)
         self.model = model
         self.logger = logging.getLogger('jedimaster.decider')
-        
-        # System prompt for the LLM
+        # ...existing code...
         self.system_prompt = """You are an expert AI assistant tasked with evaluating GitHub issues to determine if they are suitable for GitHub Copilot assistance. GitHub Copilot excels at:
 
 1. **Code Generation & Implementation**:
@@ -64,51 +64,39 @@ Analyze the provided GitHub issue and respond with a JSON object containing:
 - "reasoning": A clear explanation of why the issue is or isn't suitable for Copilot
 
 Be concise but thorough in your reasoning. Focus on whether the issue involves concrete coding tasks that Copilot can assist with."""
+    # ...existing code...
 
     def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
-        """Evaluate an issue and return decision with reasoning."""
+        # ...existing code...
         try:
-            # Format the issue data for the LLM
             issue_text = self._format_issue_for_llm(issue_data)
-              # Create the messages for the chat completion
             messages = [
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": f"Please evaluate this GitHub issue:\n\n{issue_text}"}
             ]
-            
-            # Call the OpenAI API
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,  # type: ignore
-                temperature=0.1,  # Low temperature for consistent decisions
+                temperature=0.1,
                 max_tokens=500,
                 response_format={"type": "json_object"}
             )
-            
-            # Parse the response
             result_text = response.choices[0].message.content
             if result_text is None:
                 raise ValueError("LLM returned empty response")
             result = json.loads(result_text)
-            
-            # Validate the response format
             if 'decision' not in result or 'reasoning' not in result:
                 raise ValueError("LLM response missing required fields")
-            
-            # Normalize the decision
             decision = result['decision'].lower().strip()
             if decision not in ['yes', 'no']:
                 self.logger.warning(f"Unexpected decision value: {decision}, defaulting to 'no'")
                 decision = 'no'
-            
             validated_result = {
                 'decision': decision,
                 'reasoning': result['reasoning']
             }
-            
             self.logger.debug(f"LLM decision: {decision}, reasoning: {result['reasoning'][:100]}...")
             return validated_result
-            
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse LLM response as JSON: {e}")
             return {
@@ -121,30 +109,76 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
                 'decision': 'no',
                 'reasoning': f'Error: {str(e)}'
             }
-    
+
     def _format_issue_for_llm(self, issue_data: Dict[str, Any]) -> str:
-        """Format issue data into a readable text for the LLM."""
+        # ...existing code...
         formatted = f"**Title:** {issue_data['title']}\n\n"
-        
         if issue_data.get('body'):
             formatted += f"**Description:**\n{issue_data['body']}\n\n"
-        
         if issue_data.get('labels'):
             formatted += f"**Labels:** {', '.join(issue_data['labels'])}\n\n"
-        
         if issue_data.get('comments'):
             formatted += "**Recent Comments:**\n"
-            for i, comment in enumerate(issue_data['comments'][-3:], 1):  # Last 3 comments
-                # Truncate very long comments
+            for i, comment in enumerate(issue_data['comments'][-3:], 1):
                 comment_text = comment[:300] + "..." if len(comment) > 300 else comment
                 formatted += f"{i}. {comment_text}\n"
-        
         return formatted
-    
+
     def batch_evaluate_issues(self, issues_data: list) -> list:
-        """Evaluate multiple issues in batch (for future optimization)."""
+        # ...existing code...
         results = []
         for issue_data in issues_data:
             result = self.evaluate_issue(issue_data)
             results.append(result)
         return results
+
+# --- New class for PR Decider Agent ---
+class PRDeciderAgent:
+    """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
+
+    def __init__(self, openai_api_key: str, model: str = "gpt-3.5-turbo"):
+        self.client = OpenAI(api_key=openai_api_key)
+        self.model = model
+        self.logger = logging.getLogger('jedimaster.prdecider')
+        self.system_prompt = (
+            "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
+            "Given the full text of a pull request (including title, description, and code changes), "
+            "analyze whether the PR is ready to be checked in as-is, or if it needs feedback. "
+            "Respond with a JSON object containing either:\n"
+            "- 'decision': 'check-in' if the PR can be merged as-is, or\n"
+            "- 'comment': a string with constructive feedback to be inserted as a PR comment if changes are needed.\n"
+            "Be concise, specific, and actionable in your feedback. Only return 'decision' if the PR is truly ready."
+        )
+
+    def evaluate_pr(self, pr_text: str) -> dict:
+        """Evaluate a PR and return either a decision or a comment."""
+        try:
+            messages = [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": f"Please review this pull request:\n\n{pr_text}"}
+            ]
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,  # type: ignore
+                temperature=0.1,
+                max_tokens=500,
+                response_format={"type": "json_object"}
+            )
+            result_text = response.choices[0].message.content
+            if result_text is None:
+                raise ValueError("LLM returned empty response")
+            result = json.loads(result_text)
+            if not (('decision' in result and result['decision'] == 'check-in') or 'comment' in result):
+                raise ValueError("LLM response missing required fields: must have 'decision' or 'comment'")
+            self.logger.debug(f"LLM PR review result: {result}")
+            return result
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            return {
+                'comment': 'Error: Could not parse LLM response'
+            }
+        except Exception as e:
+            self.logger.error(f"Error calling LLM for PR evaluation: {e}")
+            return {
+                'comment': f'Error: {str(e)}'
+            }

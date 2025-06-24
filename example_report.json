@@ -1,101 +1,101 @@
 {
   "total_issues": 10,
   "assigned": 0,
-  "not_assigned": 4,
+  "not_assigned": 10,
   "already_assigned": 0,
-  "labeled": 6,
+  "labeled": 0,
   "errors": 0,
   "results": [
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 349,
+      "issue_number": 390,
       "title": "Create a plugin system for extending hello.c functionality",
-      "url": "https://github.com/lucabol/Hello-World/issues/349",
+      "url": "https://github.com/lucabol/Hello-World/issues/390",
       "status": "not_assigned",
-      "reasoning": "This issue is not suitable for GitHub Copilot. It involves designing and implementing a plugin system, which requires architectural decisions and planning rather than direct coding tasks. GitHub Copilot is better suited for concrete coding tasks like writing functions, classes, or algorithms, rather than high-level design and architecture work.",
+      "reasoning": "This issue is not suitable for GitHub Copilot. It involves architectural design and implementation of a plugin system, which requires significant planning and decision-making beyond just writing code. Copilot is better suited for concrete coding tasks like writing functions, classes, or algorithms.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 348,
+      "issue_number": 389,
       "title": "Add support for voice-driven code editing in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/348",
+      "url": "https://github.com/lucabol/Hello-World/issues/389",
       "status": "not_assigned",
-      "reasoning": "This issue is not suitable for GitHub Copilot. It involves implementing a voice-driven code editing feature, which is a complex task requiring specialized knowledge in speech recognition, natural language processing, and user interface design. Copilot is designed for assisting with concrete coding tasks like code generation, refactoring, and testing, rather than implementing advanced features like voice-driven editing.",
+      "reasoning": "This issue is not suitable for GitHub Copilot. Voice-driven code editing involves complex natural language processing and integration with speech recognition technologies, which are beyond the capabilities of Copilot. It requires extensive domain knowledge in speech recognition and user interface design, making it unsuitable for automated code generation or assistance.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 347,
+      "issue_number": 388,
       "title": "Enable real-time collaborative editing for hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/347",
+      "url": "https://github.com/lucabol/Hello-World/issues/388",
       "status": "not_assigned",
-      "reasoning": "This issue is not suitable for GitHub Copilot as it involves implementing real-time collaborative editing functionality, which is a complex task requiring synchronization, conflict resolution, and potentially a deep understanding of networking and concurrency. This goes beyond the scope of code generation or refactoring that Copilot excels at, and it requires significant domain knowledge in collaborative editing systems.",
+      "reasoning": "This issue is not suitable for GitHub Copilot as it involves a feature request for enabling real-time collaborative editing, which is more about project architecture and real-time communication implementation rather than specific coding tasks. It requires complex synchronization, conflict resolution, and user interface considerations that go beyond the capabilities of code generation or improvement that Copilot can provide.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 346,
+      "issue_number": 387,
       "title": "Implement a spreadsheet-like interface for code metrics",
-      "url": "https://github.com/lucabol/Hello-World/issues/346",
-      "status": "labeled",
+      "url": "https://github.com/lucabol/Hello-World/issues/387",
+      "status": "not_assigned",
       "reasoning": "This issue is suitable for GitHub Copilot. It involves concrete coding tasks such as creating a spreadsheet tool, analyzing code metrics, and displaying them in a tabular format. Copilot can assist in generating the necessary functions, classes, and logic for implementing the spreadsheet-like interface for code metrics.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 345,
+      "issue_number": 386,
       "title": "Integrate a visual block-based editor for C code",
-      "url": "https://github.com/lucabol/Hello-World/issues/345",
+      "url": "https://github.com/lucabol/Hello-World/issues/386",
       "status": "not_assigned",
-      "reasoning": "This issue is not suitable for GitHub Copilot. Integrating a visual block-based editor involves significant UI/UX design and frontend development work, which is beyond the scope of Copilot's capabilities. Copilot excels at code generation, refactoring, documentation, and testing tasks, but it is not designed for tasks that require extensive user interface implementation or design decisions.",
+      "reasoning": "This issue is not suitable for GitHub Copilot. Integrating a visual block-based editor involves complex frontend development, interaction design, and potentially backend integration. It requires expertise in web technologies, UI/UX design, and possibly compiler integration, which are beyond the scope of code generation or improvement tasks that Copilot excels at.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 344,
+      "issue_number": 385,
       "title": "Use puts instead of printf in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/344",
-      "status": "labeled",
-      "reasoning": "This issue is suitable for GitHub Copilot as it involves a clear and specific coding task: replacing the usage of printf with puts in a C file. Copilot can assist in generating the necessary code changes and provide guidance on the syntax and usage of the puts function.",
+      "url": "https://github.com/lucabol/Hello-World/issues/385",
+      "status": "not_assigned",
+      "reasoning": "This issue is suitable for GitHub Copilot as it involves a clear and specific coding task: replacing the usage of printf with puts in a C file. Copilot can assist in generating the appropriate code change, which falls under code improvement and refactoring.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 343,
+      "issue_number": 384,
       "title": "Print the program's exit code in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/343",
-      "status": "labeled",
-      "reasoning": "This issue is suitable for GitHub Copilot. It involves a clear coding task of modifying the hello.c program to print the return value of main before exiting. Copilot can assist in implementing this task by providing code snippets or suggestions on how to achieve the desired functionality.",
+      "url": "https://github.com/lucabol/Hello-World/issues/384",
+      "status": "not_assigned",
+      "reasoning": "This issue is suitable for GitHub Copilot because it involves a clear coding task: modifying the hello.c program to print the return value of main before exiting. Copilot can assist in adding the necessary code to achieve this task, such as retrieving the return value and printing it to the console.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 342,
+      "issue_number": 383,
       "title": "Add a function to print a custom message in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/342",
-      "status": "labeled",
-      "reasoning": "This issue is suitable for GitHub Copilot as it involves code improvement and refactoring. Copilot can assist in adding a function to hello.c that prints a custom message passed as an argument, which falls within the scope of code generation and implementation tasks.",
+      "url": "https://github.com/lucabol/Hello-World/issues/383",
+      "status": "not_assigned",
+      "reasoning": "This issue is suitable for GitHub Copilot. It involves a clear coding task of adding a function to print a custom message in hello.c. Copilot can assist in writing the function, handling the argument passing, and ensuring the code follows best practices for modularity and readability.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 341,
+      "issue_number": 382,
       "title": "Add a newline after the greeting in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/341",
-      "status": "labeled",
+      "url": "https://github.com/lucabol/Hello-World/issues/382",
+      "status": "not_assigned",
       "reasoning": "This issue is suitable for GitHub Copilot as it involves a clear coding task: adding a newline character at the end of the output in a C file. Copilot can assist in modifying the code to include the necessary newline character, which falls under code improvement and bug fixing tasks.",
       "error_message": null
     },
     {
       "repo": "lucabol/Hello-World",
-      "issue_number": 340,
+      "issue_number": 381,
       "title": "Change the greeting to Italian in hello.c",
-      "url": "https://github.com/lucabol/Hello-World/issues/340",
-      "status": "labeled",
-      "reasoning": "This issue is suitable for GitHub Copilot as it involves a clear coding task of modifying a specific string output in a C program. Copilot can assist in generating the code snippet needed to change the greeting to Italian in the hello.c file.",
+      "url": "https://github.com/lucabol/Hello-World/issues/381",
+      "status": "not_assigned",
+      "reasoning": "This issue is suitable for GitHub Copilot. It involves a clear coding task of modifying a specific file (hello.c) to change the greeting message from English to Italian. Copilot can assist in generating the code snippet needed to make this change, which falls under code modification and implementation tasks.",
       "error_message": null
     }
   ],
-  "timestamp": "2025-06-15T13:17:31.831025"
+  "timestamp": "2025-06-24T14:38:24.247142"
 }
