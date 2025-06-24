@@ -5,11 +5,13 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 
 ---
 
+
 ## Features
 
 - **AI Issue Evaluation**: Uses OpenAI GPT models to analyze GitHub issues for Copilot suitability.
 - **Automated Assignment**: Assigns suitable issues to Copilot with labels and comments.
-- **Multi-Repo & User Support**: Process issues for multiple repositories or all repos for a user.
+- **Automated PR Review**: Reviews open pull requests using AI (PRDeciderAgent) and can comment or mark PRs as ready to merge.
+- **Multi-Repo & User Support**: Process issues and PRs for multiple repositories or all repos for a user.
 - **Flexible Deployment**: Run as a standalone Python script or as Azure Functions (HTTP & Timer triggers).
 - **Comprehensive Reporting**: Generates detailed JSON reports.
 - **Robust Error Handling**: Handles API, network, and data errors gracefully.
@@ -53,6 +55,7 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 
 ## Usage
 
+
 ### 1. As a Python Script
 
 Process issues for one or more repositories:
@@ -65,10 +68,21 @@ Process all repositories for a user:
 python jedimaster.py --user github-username
 ```
 
+Process open pull requests for one or more repositories:
+```bash
+python jedimaster.py --process-prs owner/repo1 owner/repo2
+```
+
+Process open pull requests for all repositories for a user:
+```bash
+python jedimaster.py --user github-username --process-prs
+```
+
 **Options:**
-- `-o, --output FILENAME`  Output filename for the report (default: auto-generated)
-- `-v, --verbose`          Enable verbose logging
-- `-h, --help`             Show help message
+- `--process-prs`           Process open pull requests using AI review (PRDeciderAgent)
+- `-o, --output FILENAME`   Output filename for the report (default: auto-generated)
+- `-v, --verbose`           Enable verbose logging
+- `-h, --help`              Show help message
 
 ---
 
@@ -117,10 +131,11 @@ Invoke-RestMethod -Uri "http://localhost:7071/api/ProcessUser" -Method Post -Bod
 
 ---
 
+
 ## Output
 
 - **Console**: Real-time progress and summary.
-- **JSON Report**: Detailed results, including assignment status and reasoning.
+- **JSON Report**: Detailed results, including assignment and PR review status, reasoning, and actions taken.
 
 ---
 
