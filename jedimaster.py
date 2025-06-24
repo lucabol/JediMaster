@@ -215,6 +215,33 @@ class JediMaster:
                     reasoning=result.get('reasoning')
                 )
             else:
+                # Add 'no-github-copilot' label if not suitable
+                try:
+                    repo = issue.repository
+                    no_copilot_label = None
+                    for label in repo.get_labels():
+                        if label.name.lower() == 'no-github-copilot':
+                            no_copilot_label = label
+                            break
+                    if not no_copilot_label:
+                        no_copilot_label = repo.create_label(
+                            name="no-github-copilot",
+                            color="ededed",
+                            description="Issue not suitable for GitHub Copilot"
+                        )
+                    issue.add_to_labels(no_copilot_label)
+                    self.logger.info(f"Added 'no-github-copilot' label to issue #{issue.number}")
+                except Exception as e:
+                    self.logger.error(f"Could not add 'no-github-copilot' label to issue #{issue.number}: {e}")
+                    return IssueResult(
+                        repo=repo_name,
+                        issue_number=issue.number,
+                        title=issue.title,
+                        url=issue.html_url,
+                        status='error',
+                        reasoning=result.get('reasoning'),
+                        error_message=f"Failed to add 'no-github-copilot' label: {e}"
+                    )
                 return IssueResult(
                     repo=repo_name,
                     issue_number=issue.number,
