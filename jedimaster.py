@@ -183,7 +183,13 @@ class JediMaster:
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
                 elif result.get('decision') == 'accept':
                     self.logger.info(f"PR #{pr.number} in {repo_name} can be accepted as-is.")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'check-in'})
+                    try:
+                        pr.create_review(event='APPROVE', body='Automatically approved by JediMaster.')
+                        self.logger.info(f"Approved PR #{pr.number} in {repo_name}.")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'approved'})
+                    except Exception as e:
+                        self.logger.error(f"Failed to submit review for PR #{pr.number}: {e}")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
                 else:
                     self.logger.warning(f"Unexpected PRDeciderAgent result for PR #{pr.number}: {result}")
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'unknown', 'result': result})

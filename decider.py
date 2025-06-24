@@ -146,8 +146,8 @@ class PRDeciderAgent:
     "- 'decision': 'accept' if the PR can be merged as-is, or\n"
     "- 'comment': a string with constructive feedback to be inserted as a PR comment if changes are needed.\n"
     "Given the full text of a pull request (including title, description, and code changes):\n"
-    "- If the PR has plenty of comments in the code changes, reply with {'decision': 'accept'}.\n"
-    "- If the PR title does NOT has plenty of comments in the code changes, reply with {'comment': 'Please add more comments to your code changes.'}.\n"
+    "- If the PR is well written and satisfies all requirements, reply with {'decision': 'accept'}.\n"
+    "- Otherwise, reply with {'comment': 'Please add more comments to your code changes.'}.\n"
     "Ensure your response is a valid JSON object with either 'decision' or 'comment'"
 )
 
