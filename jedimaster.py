@@ -260,7 +260,7 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False):
+    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
         self.github_token = github_token
         self.github = Github(github_token)
         self.decider = DeciderAgent(openai_api_key)
@@ -268,7 +268,153 @@ class JediMaster:
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
         self.process_prs = process_prs
+        self.auto_merge_reviewed = auto_merge_reviewed
         self.logger = self._setup_logger()
+
+    def merge_reviewed_pull_requests(self, repo_name: str):
+        """Merge PRs that are approved and have no conflicts with the base branch. If PR is a draft, mark as ready for review first."""
+        results = []
+        try:
+            repo = self.github.get_repo(repo_name)
+            pulls = list(repo.get_pulls(state='open'))
+            self.logger.info(f"Found {len(pulls)} open PRs in {repo_name}")
+            
+            for pr in pulls:
+                self.logger.info(f"Checking PR #{pr.number}: '{pr.title}' (draft: {getattr(pr, 'draft', 'unknown')}, mergeable: {pr.mergeable})")
+                
+                # Check if PR is approved (reviewed)
+                reviews = list(pr.get_reviews())
+                approved = any(r.state == 'APPROVED' for r in reviews)
+                if not approved:
+                    self.logger.info(f"PR #{pr.number} in {repo_name} is not approved, skipping")
+                    continue
+                
+                # Check if the current user (bot token owner) is one of the reviewers
+                # This can cause issues in some GitHub configurations
+                try:
+                    current_user = self.github.get_user()
+                    current_username = current_user.login
+                    reviewer_usernames = [r.user.login for r in reviews if r.user and r.state == 'APPROVED']
+                    
+                    if current_username in reviewer_usernames:
+                        self.logger.warning(f"PR #{pr.number} was approved by the same user ({current_username}) attempting to merge. This may cause permission issues.")
+                        # Continue anyway, but log the potential issue
+                    
+                    self.logger.info(f"PR #{pr.number} approved by: {reviewer_usernames}, merging as: {current_username}")
+                except Exception as e:
+                    self.logger.warning(f"Could not determine current user for PR #{pr.number}: {e}")
+                    # Continue anyway
+                
+                # Refresh PR data to get latest state
+                pr.update()
+                
+                # If PR is a draft, mark as ready for review first
+                if getattr(pr, 'draft', False):
+                    self.logger.info(f"PR #{pr.number} is a draft, marking as ready for review")
+                    try:
+                        # Try using GraphQL API to mark as ready for review
+                        mutation = """
+                        mutation($pullRequestId: ID!) {
+                          markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
+                            pullRequest {
+                              id
+                              isDraft
+                              number
+                            }
+                          }
+                        }
+                        """
+                        
+                        # First get the PR's node ID
+                        pr_query = """
+                        query($owner: String!, $name: String!, $number: Int!) {
+                          repository(owner: $owner, name: $name) {
+                            pullRequest(number: $number) {
+                              id
+                              isDraft
+                            }
+                          }
+                        }
+                        """
+                        
+                        repo_parts = repo_name.split('/')
+                        query_vars = {
+                            "owner": repo_parts[0],
+                            "name": repo_parts[1], 
+                            "number": pr.number
+                        }
+                        
+                        query_result = self._graphql_request(pr_query, query_vars)
+                        if "errors" in query_result:
+                            self.logger.error(f"GraphQL query errors: {query_result['errors']}")
+                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to get PR node ID: {query_result["errors"]}'})
+                            continue
+                            
+                        pr_node_id = query_result["data"]["repository"]["pullRequest"]["id"]
+                        is_draft = query_result["data"]["repository"]["pullRequest"]["isDraft"]
+                        
+                        self.logger.info(f"PR #{pr.number} node ID: {pr_node_id}, isDraft: {is_draft}")
+                        
+                        if is_draft:
+                            # Use the mutation to mark as ready
+                            mutation_vars = {"pullRequestId": pr_node_id}
+                            mutation_result = self._graphql_request(mutation, mutation_vars)
+                            
+                            if "errors" in mutation_result:
+                                self.logger.error(f"GraphQL mutation errors: {mutation_result['errors']}")
+                                results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to mark as ready: {mutation_result["errors"]}'})
+                                continue
+                            
+                            # Check the result
+                            updated_draft_status = mutation_result["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"]
+                            self.logger.info(f"Successfully marked PR #{pr.number} as ready for review. New draft status: {updated_draft_status}")
+                            
+                            # Give GitHub a moment to update and refresh our PR object
+                            import time
+                            time.sleep(2)
+                            pr = repo.get_pull(pr.number)
+                            self.logger.info(f"After refresh - PR #{pr.number} draft status: {getattr(pr, 'draft', 'unknown')}")
+                        else:
+                            self.logger.info(f"PR #{pr.number} is already marked as ready for review")
+                            
+                    except Exception as e:
+                        self.logger.error(f"Failed to mark PR #{pr.number} as ready for review: {e}")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to mark as ready for review: {e}'})
+                        continue
+                
+                # Check for mergeability (no conflicts)
+                if pr.mergeable is False:
+                    self.logger.info(f"PR #{pr.number} in {repo_name} is approved but has conflicts, skipping merge")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Has merge conflicts'})
+                    continue
+                elif pr.mergeable is None:
+                    self.logger.warning(f"PR #{pr.number} in {repo_name} has unknown mergeable state, skipping merge")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Unknown merge state'})
+                    continue
+                
+                # Final check to ensure PR is not a draft before merging
+                pr_draft_status = getattr(pr, 'draft', False)
+                if pr_draft_status:
+                    self.logger.error(f"PR #{pr.number} is still in draft state after processing, skipping merge")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'PR still in draft state'})
+                    continue
+                
+                self.logger.info(f"Attempting to merge PR #{pr.number} in {repo_name} (approved={approved}, mergeable={pr.mergeable}, draft={pr_draft_status})")
+                try:
+                    merge_result = pr.merge(merge_method='squash', commit_message=f"Auto-merged by JediMaster: {pr.title}")
+                    if merge_result.merged:
+                        self.logger.info(f"Successfully auto-merged PR #{pr.number} in {repo_name}")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merged'})
+                    else:
+                        self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name}: {merge_result.message}")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': merge_result.message})
+                except Exception as e:
+                    self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name}: {e}")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': str(e)})
+        except Exception as e:
+            self.logger.error(f"Error merging reviewed PRs in {repo_name}: {e}")
+            results.append({'repo': repo_name, 'pr_number': 0, 'status': 'merge_error', 'error': str(e)})
+        return results
 
     def process_pull_requests(self, repo_name: str):
         results = []
@@ -515,8 +661,11 @@ def main():
                        help='Only add labels to issues, do not assign them to Copilot')
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
+
     parser.add_argument('--process-prs', action='store_true',
                        help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
+    parser.add_argument('--auto-merge-reviewed', action='store_true',
+                       help='Automatically merge reviewed PRs with no conflicts')
 
     args = parser.parse_args()
 
@@ -547,21 +696,37 @@ def main():
 
     try:
         use_topic_filter = not args.use_file_filter
+
         jedimaster = JediMaster(
             github_token,
             openai_api_key,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
-            process_prs=args.process_prs
+            process_prs=args.process_prs,
+            auto_merge_reviewed=args.auto_merge_reviewed
         )
+
 
         # Process based on input type
         if args.user:
             print(f"Processing user: {args.user}")
             report = jedimaster.process_user(args.user)
+            repo_names = [r.repo for r in report.results] if report.results else []
         else:
             print(f"Processing {len(args.repositories)} repositories...")
             report = jedimaster.process_repositories(args.repositories)
+            repo_names = args.repositories
+
+        # Auto-merge reviewed PRs if requested
+        if args.auto_merge_reviewed:
+            print("\nChecking for reviewed PRs to auto-merge...")
+            for repo_name in repo_names:
+                merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
+                for res in merge_results:
+                    if res['status'] == 'merged':
+                        print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
+                    elif res['status'] == 'merge_error':
+                        print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
 
         # Save and display results
         filename = jedimaster.save_report(report, args.output)

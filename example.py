@@ -122,6 +122,8 @@ def main():
                        help='Comma-separated list of repositories to process (default: lucabol/Hello-World)')
     parser.add_argument('--user', type=str, default=None,
                        help='Process all repositories for a given user (overrides --repos if provided)')
+    parser.add_argument('--auto-merge-reviewed', action='store_true',
+                       help='Automatically merge reviewed PRs with no conflicts')
     args = parser.parse_args()
 
     # Determine just_label value (--assign overrides the default)
@@ -147,7 +149,8 @@ def main():
         openai_api_key,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
-        process_prs=args.process_prs
+        process_prs=args.process_prs,
+        auto_merge_reviewed=getattr(args, 'auto_merge_reviewed', False)
     )
     
     # Show which mode we're using
@@ -162,19 +165,31 @@ def main():
         print(f"Processing user: {username}")
         print(f"Looking for repositories with {filter_method}...")
         report = jedimaster.process_user(username)
+        repo_names = [r.repo for r in report.results] if report.results else []
     else:
         repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
         print(f"Processing repositories: {repo_names}")
         report = jedimaster.process_repositories(repo_names)
-    
+
+    # Auto-merge reviewed PRs if requested
+    if getattr(args, 'auto_merge_reviewed', False):
+        print("\nChecking for reviewed PRs to auto-merge...")
+        for repo_name in repo_names:
+            merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
+            for res in merge_results:
+                if res['status'] == 'merged':
+                    print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
+                elif res['status'] == 'merge_error':
+                    print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
+
     # Save report
     filename = jedimaster.save_report(report, "example_report.json")
-    
+
     # Print summary
     jedimaster.print_summary(report)
-    
+
     print(f"\nReport saved to: {filename}")
-    
+
     # Example of accessing individual results
     print(f"\nDetailed results:")
     for result in report.results:
