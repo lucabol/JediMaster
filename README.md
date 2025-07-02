@@ -78,8 +78,20 @@ Process open pull requests for all repositories for a user:
 python jedimaster.py --user github-username --process-prs
 ```
 
+
+
 **Options:**
+
+- `--create-issues`         Use LLM to suggest and open new issues in the specified repositories. Prints the full LLM conversation (prompts and response) for transparency and debugging. Example:
+
+  ```bash
+  python jedimaster.py --create-issues owner/repo1 owner/repo2
+  ```
+
 - `--process-prs`           Process open pull requests using AI review (PRDeciderAgent)
+- `--auto-merge-reviewed`   Automatically merge reviewed PRs with no conflicts
+- `--just-label`            Only add labels to issues, do not assign them to Copilot
+- `--use-file-filter`       Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)
 - `-o, --output FILENAME`   Output filename for the report (default: auto-generated)
 - `-v, --verbose`           Enable verbose logging
 - `-h, --help`              Show help message
