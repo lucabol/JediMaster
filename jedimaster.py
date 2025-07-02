@@ -387,6 +387,12 @@ class JediMaster:
                 # Check for mergeability (no conflicts)
                 if pr.mergeable is False:
                     self.logger.info(f"PR #{pr.number} in {repo_name} is approved but has conflicts, skipping merge")
+                    # Add a comment to the PR about conflicts
+                    try:
+                        pr.create_issue_comment("Please resolve conflicts")
+                        self.logger.info(f"Added conflict comment to PR #{pr.number} in {repo_name}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to comment on PR #{pr.number} about conflicts: {e}")
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Has merge conflicts'})
                     continue
                 elif pr.mergeable is None:
