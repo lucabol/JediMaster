@@ -16,7 +16,9 @@ import requests
 from github import Github, GithubException
 from dotenv import load_dotenv
 
+
 from decider import DeciderAgent, PRDeciderAgent
+from creator import CreatorAgent
 
 
 
@@ -642,6 +644,7 @@ class JediMaster:
                     print(f"  • {result.repo}#{result.issue_number}: {result.error_message}")
 
 
+
 def main():
     """Main entry point for the JediMaster script."""
     parser = argparse.ArgumentParser(description='JediMaster - Label or assign GitHub issues to Copilot and optionally process PRs')
@@ -666,6 +669,9 @@ def main():
                        help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
     parser.add_argument('--auto-merge-reviewed', action='store_true',
                        help='Automatically merge reviewed PRs with no conflicts')
+
+    parser.add_argument('--create-issues', action='store_true',
+                       help='Use CreatorAgent to suggest and open new issues in the specified repositories')
 
     args = parser.parse_args()
 
@@ -694,8 +700,40 @@ def main():
     if args.verbose:
         logging.getLogger('jedimaster').setLevel(logging.DEBUG)
 
+
     try:
         use_topic_filter = not args.use_file_filter
+
+        # If --create-issues is set, use CreatorAgent for each repo
+        if args.create_issues:
+            if args.user:
+                print("--create-issues does not support --user mode. Please specify repositories explicitly.")
+                return 1
+            if not args.repositories:
+                print("No repositories specified for --create-issues.")
+                return 1
+            for repo_full_name in args.repositories:
+                print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
+                creator = CreatorAgent(github_token, openai_api_key, repo_full_name)
+                results = creator.create_issues()
+                # Always print the LLM conversation, even if error or invalid JSON, before any error/empty result message
+                conv = getattr(creator, 'last_conversation', None)
+                print("\n--- LLM Conversation ---")
+                if conv:
+                    print("[System Prompt]:\n" + conv.get("system", ""))
+                    print("\n[User Prompt]:\n" + conv.get("user", ""))
+                    print("\n[LLM Response]:\n" + str(conv.get("llm_response", "")))
+                else:
+                    print("[No conversation captured]")
+                print("--- End Conversation ---\n")
+                if not results:
+                    print("No issues suggested by LLM.")
+                for res in results:
+                    if res.get('status') == 'created':
+                        print(f"  - Created: {res['title']} -> {res['url']}")
+                    else:
+                        print(f"  - Failed: {res['title']} ({res.get('error', 'Unknown error')})")
+            return 0
 
         jedimaster = JediMaster(
             github_token,
@@ -705,7 +743,6 @@ def main():
             process_prs=args.process_prs,
             auto_merge_reviewed=args.auto_merge_reviewed
         )
-
 
         # Process based on input type
         if args.user:

@@ -7,6 +7,7 @@ import os
 import argparse
 from dotenv import load_dotenv
 from jedimaster import JediMaster
+from creator import CreatorAgent
 
 # Utility functions for repo/issue management
 
@@ -124,6 +125,8 @@ def main():
                        help='Process all repositories for a given user (overrides --repos if provided)')
     parser.add_argument('--auto-merge-reviewed', action='store_true',
                        help='Automatically merge reviewed PRs with no conflicts')
+    parser.add_argument('--create-issues', action='store_true',
+                       help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     args = parser.parse_args()
 
     # Determine just_label value (--assign overrides the default)
@@ -143,6 +146,24 @@ def main():
         print("Please set GITHUB_TOKEN and OPENAI_API_KEY environment variables")
         print("Either in a .env file or as system environment variables")
         return
+
+    # If --create-issues is set, use CreatorAgent for each repo
+    if getattr(args, 'create_issues', False):
+        if args.user:
+            print("--create-issues does not support --user mode. Please specify repositories explicitly.")
+            return
+        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        for repo_full_name in repo_names:
+            print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
+            creator = CreatorAgent(github_token, openai_api_key, repo_full_name)
+            results = creator.create_issues()
+            for res in results:
+                if res.get('status') == 'created':
+                    print(f"  - Created: {res['title']} -> {res['url']}")
+                else:
+                    print(f"  - Failed: {res['title']} ({res.get('error', 'Unknown error')})")
+        return
+
     # Initialize JediMaster
     jedimaster = JediMaster(
         github_token,
@@ -152,13 +173,13 @@ def main():
         process_prs=args.process_prs,
         auto_merge_reviewed=getattr(args, 'auto_merge_reviewed', False)
     )
-    
+
     # Show which mode we're using
     mode = "labeling only" if just_label else "assigning"
     filter_method = "topic 'managed-by-coding-agent'" if use_topic_filter else ".coding_agent file"
     print(f"JediMaster mode: {mode}")
     print(f"Filtering method: {filter_method}")
-    
+
     # Decide processing mode
     if args.user:
         username = args.user
