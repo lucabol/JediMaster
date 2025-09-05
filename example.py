@@ -127,7 +127,13 @@ def main():
                        help='Automatically merge reviewed PRs with no conflicts')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+    parser.add_argument('--populate-repo', action='store_true',
+                          help='Populate the repo with example issues before running.')
     args = parser.parse_args()
+
+    if args.populate_repo:
+        populate_repo_with_issues()
+        return
 
     # Determine just_label value (--assign overrides the default)
     just_label = not args.assign if args.assign else args.just_label
@@ -219,5 +225,4 @@ def main():
             print(f"    Reasoning: {result.reasoning[:100]}...")
 
 if __name__ == '__main__':
-    populate_repo_with_issues()
     main()
