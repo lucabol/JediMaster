@@ -212,6 +212,17 @@ def main():
                 print('Recreated hello.c baseline.')
             else:
                 print(f'Failed to recreate hello.c: {err_file}')
+            
+            # Reset README.md to baseline content
+            baseline_readme = "# Hello World\n Test repo for JediMaster"
+            ok_readme, err_readme = update_github_file(
+                github_token, owner, repo, 'README.md', baseline_readme, 'Reset baseline README.md for repo reset'
+            )
+            if ok_readme:
+                print('Recreated README.md baseline.')
+            else:
+                print(f'Failed to recreate README.md: {err_readme}')
+            
             print(f"Deleting unwanted files in {repo_full_name}...")
             url = f"https://api.github.com/repos/{owner}/{repo}/contents"
             headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
