@@ -21,10 +21,12 @@ class CreatorAgent:
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
             "You are an expert AI assistant tasked with analyzing a GitHub repository and suggesting actionable, concrete issues that could be opened to improve the project. "
-            "Return your answer as a JSON array (not a single object, not a dict with 'suggestions'), where each element is an object with 'title' and 'body' fields. "
+            "You MUST return exactly the requested number of issues as a JSON array where each element is an object with 'title' and 'body' fields. "
+            "Focus on different categories of improvements: bug fixes, new features, code quality improvements, documentation enhancements, testing, and performance optimizations. "
             "Each issue should be specific, actionable, and relevant to the code or documentation. "
-            "Do not include duplicate or trivial issues. "
-            "Do NOT return a single object or a dict with 'suggestions'. Always return a JSON array of objects."
+            "Do not include duplicate or trivial issues. Make sure each issue is distinct and addresses different aspects of the project. "
+            "CRITICAL: Return ONLY a JSON array of objects, not a single object or a dict with nested arrays. "
+            "Example format: [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]"
         )
 
     def _gather_repo_context(self, max_chars: int = 12000) -> str:
@@ -80,9 +82,11 @@ class CreatorAgent:
         """Call LLM to suggest issues based on repo context. Stores the conversation for inspection."""
         context = self._gather_repo_context()
         user_prompt = (
-            f"Given the following repository context, suggest up to {max_issues} new GitHub issues. "
-            "Return your answer as a JSON array (not a single object, not a dict with 'suggestions'), where each element is an object with 'title' and 'body' fields. "
-            "Do NOT return a single object or a dict with 'suggestions'. Always return a JSON array of objects.\n\n"
+            f"Given the following repository context, suggest exactly {max_issues} new GitHub issues. "
+            f"You MUST return exactly {max_issues} distinct issues as a JSON array. "
+            "Each element should be an object with 'title' and 'body' fields. "
+            "Focus on different categories: bug fixes, new features, code quality, documentation, testing, and performance. "
+            f"Return ONLY the JSON array with {max_issues} issues, no other text.\n\n"
             f"Repository context:\n{context}"
         )
         messages = [
@@ -93,8 +97,7 @@ class CreatorAgent:
             model=self.model,
             messages=messages,  # type: ignore
             temperature=0.3,
-            max_tokens=1000,
-            response_format={"type": "json_object"}
+            max_tokens=1000
         )
         result_text = response.choices[0].message.content
         self.last_conversation = {
@@ -105,29 +108,36 @@ class CreatorAgent:
         if not result_text:
             raise ValueError("LLM returned empty response")
         try:
-            issues = json.loads(result_text)
-            # Accept either a top-level list, a dict with 'suggestions', or a single issue dict
+            # Clean up the response text (remove any markdown code blocks)
+            cleaned_response = result_text.strip()
+            if cleaned_response.startswith('```json'):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.endswith('```'):
+                cleaned_response = cleaned_response[:-3]
+            cleaned_response = cleaned_response.strip()
+            
+            issues = json.loads(cleaned_response)
+            
+            # Expect a JSON array of issues
             if isinstance(issues, list):
                 return issues[:max_issues]
             elif isinstance(issues, dict):
-                if 'suggestions' in issues and isinstance(issues['suggestions'], list):
-                    return issues['suggestions'][:max_issues]
+                # Handle wrapper objects like {"issues": [...]} or {"suggestions": [...]}
+                for key in ['issues', 'suggestions', 'items']:
+                    if key in issues and isinstance(issues[key], list):
+                        return issues[key][:max_issues]
                 # Handle single issue dict with 'title' and 'body'
-                elif 'title' in issues and 'body' in issues:
+                if 'title' in issues and 'body' in issues:
                     return [issues]
-            raise ValueError("LLM did not return a list of issues, a dict with 'suggestions' list, or a single issue dict")
+            
+            # If we get here, the format is unexpected
+            self.logger.error(f"Unexpected LLM response format: {type(issues)}")
+            return []
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            return []
         except Exception as e:
             self.logger.error(f"Failed to parse LLM response: {e}")
-            # Still return empty, but conversation is available for printing
-            conv = getattr(self, 'last_conversation', None)
-            print("\n--- LLM Conversation ---")
-            if conv:
-                print("[System Prompt]:\n" + conv.get("system", ""))
-                print("\n[User Prompt]:\n" + conv.get("user", ""))
-                print("\n[LLM Response]:\n" + str(conv.get("llm_response", "")))
-            else:
-                print("[No conversation captured]")
-            print("--- End Conversation ---\n")
             return []
 
     def open_issues(self, issues: List[Dict[str, str]]) -> List[Dict[str, Any]]:
