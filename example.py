@@ -293,7 +293,53 @@ def main():
     print(f"JediMaster mode: {mode}")
     print(f"Filtering method: {filter_method}")
 
-    # Decide processing mode
+    # Auto-merge reviewed PRs if requested (PR-only operation, skips issue processing)
+    if getattr(args, 'auto_merge_reviewed', False):
+        print("Auto-merge mode: Only checking PRs for auto-merge, skipping issue processing...")
+        
+        # Determine repos to check without processing issues
+        if args.user:
+            username = args.user
+            print(f"Finding repositories for user: {username}")
+            print(f"Looking for repositories with {filter_method}...")
+            try:
+                user = jedimaster.github.get_user(username)
+                all_repos = user.get_repos()
+                repo_names = []
+                for repo in all_repos:
+                    if jedimaster.use_topic_filter:
+                        if jedimaster._repo_has_topic(repo, "managed-by-coding-agent"):
+                            repo_names.append(repo.full_name)
+                            print(f"Found topic 'managed-by-coding-agent' in repository: {repo.full_name}")
+                    else:
+                        if jedimaster._file_exists_in_repo(repo, ".coding_agent"):
+                            repo_names.append(repo.full_name)
+                            print(f"Found .coding_agent file in repository: {repo.full_name}")
+                if not repo_names:
+                    filter_desc = "topic 'managed-by-coding-agent'" if jedimaster.use_topic_filter else ".coding_agent file"
+                    print(f"No repositories found with {filter_desc} for user {username}")
+                    return
+            except Exception as e:
+                print(f"Error accessing user {username}: {e}")
+                return
+        else:
+            repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        
+        print(f"Checking {len(repo_names)} repositories for auto-merge candidates...")
+        
+        # Only do auto-merge, no issue processing
+        for repo_name in repo_names:
+            merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
+            for res in merge_results:
+                if res['status'] == 'merged':
+                    print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
+                elif res['status'] == 'merge_error':
+                    print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
+        
+        print(f"\nAuto-merge complete.")
+        return
+    
+    # Normal processing mode (issues/PRs based on other flags)
     if args.user:
         username = args.user
         print(f"Processing user: {username}")
@@ -304,17 +350,6 @@ def main():
         repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
         print(f"Processing repositories: {repo_names}")
         report = jedimaster.process_repositories(repo_names)
-
-    # Auto-merge reviewed PRs if requested
-    if getattr(args, 'auto_merge_reviewed', False):
-        print("\nChecking for reviewed PRs to auto-merge...")
-        for repo_name in repo_names:
-            merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
-            for res in merge_results:
-                if res['status'] == 'merged':
-                    print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
-                elif res['status'] == 'merge_error':
-                    print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
 
     # Save report
     filename = jedimaster.save_report(report, "example_report.json")
