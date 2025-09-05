@@ -82,7 +82,7 @@ def update_github_file(token, owner, repo, path, new_content, commit_message):
         return False, f"Error {update_response.status_code}: {update_response.text}"
 
 def populate_repo_with_issues():
-    """Close all existing issues, then add 10 issues (5 good for Copilot, 5 not) to lucabol/Hello-World."""
+    """Add 10 example issues (5 good for Copilot, 5 not) to lucabol/Hello-World. Does not close or reset repo state."""
     github_token = os.getenv('GITHUB_TOKEN')
     if not github_token:
         print("GITHUB_TOKEN not set. Skipping issue creation.")
@@ -90,17 +90,6 @@ def populate_repo_with_issues():
     owner = "lucabol"
     repo = "Hello-World"
 
-    # Reset hello.c to a known state
-    print("Resetting hello.c to its initial state...")
-    hello_c_content = '# include <stdio.h>\n \nint main(){\n    printf("Hello world!\\n\\n");\n}'
-    update_ok, update_err = update_github_file(
-        github_token, owner, repo, "hello.c", hello_c_content, "Reset hello.c for testing"
-    )
-    if update_ok:
-        print("hello.c has been reset successfully.")
-    else:
-        print(f"Failed to reset hello.c: {update_err}")
-        # We will continue even if this fails, as the file might be in the right state.
 
     # Issue deletion is now handled by --delete-issues, not here
     print("Populating repo with issues...")
@@ -175,23 +164,78 @@ def main():
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--populate-issues', action='store_true',
                           help='Populate the repo with example issues before running.')
-    parser.add_argument('--delete-issues', action='store_true',
-                          help='Delete (close) all issues in the specified repositories.')
+    parser.add_argument('--reset-repo', action='store_true',
+                          help='Reset the repo: close all issues, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
     args = parser.parse_args()
 
-    if args.delete_issues:
+    if args.reset_repo:
         if args.user:
-            print("--delete-issues does not support --user mode. Please specify repositories explicitly.")
+            print("--reset-repo does not support --user mode. Please specify repositories explicitly.")
             return
         github_token = os.getenv('GITHUB_TOKEN')
         if not github_token:
-            print("GITHUB_TOKEN not set. Cannot delete issues.")
+            print("GITHUB_TOKEN not set. Cannot reset repo.")
             return
         repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
         for repo_full_name in repo_names:
             owner, repo = repo_full_name.split('/')
-            print(f"Deleting (closing) all issues in {repo_full_name}...")
+            print(f"Closing all issues in {repo_full_name}...")
             close_all_open_issues(github_token, owner, repo)
+            # Close all open PRs
+            print(f"Closing all PRs in {repo_full_name}...")
+            headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+            pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page=100"
+            pr_resp = requests.get(pr_url, headers=headers)
+            if pr_resp.status_code == 200:
+                prs = pr_resp.json()
+                for pr in prs:
+                    pr_number = pr['number']
+                    close_pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
+                    patch_resp = requests.patch(close_pr_url, headers=headers, json={"state": "closed"})
+                    if patch_resp.status_code == 200:
+                        print(f"Closed PR #{pr_number}")
+                    else:
+                        print(f"Failed to close PR #{pr_number}: {patch_resp.status_code} {patch_resp.text}")
+            else:
+                print(f"Failed to fetch open PRs: {pr_resp.status_code} {pr_resp.text}")
+            # Recreate baseline hello.c
+            baseline_hello = (
+                '# include <stdio.h>\n\n'
+                'int main(){\n'
+                '    printf("Hello world!");\n'
+                '}\n'
+            )
+            ok_file, err_file = update_github_file(
+                github_token, owner, repo, 'hello.c', baseline_hello, 'Reset baseline hello.c for repo reset'
+            )
+            if ok_file:
+                print('Recreated hello.c baseline.')
+            else:
+                print(f'Failed to recreate hello.c: {err_file}')
+            print(f"Deleting unwanted files in {repo_full_name}...")
+            url = f"https://api.github.com/repos/{owner}/{repo}/contents"
+            headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                files = response.json()
+                allowed = {"hello.c", ".gitignore", "README.md"}
+                for item in files:
+                    name = item['name']
+                    path = item['path']
+                    if name in allowed or (name == ".github" and item['type'] == "dir"):
+                        continue
+                    # Delete file or directory
+                    if item['type'] == "file":
+                        del_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+                        del_resp = requests.delete(del_url, headers=headers, json={"message": f"Remove {name} for repo reset", "sha": item['sha']})
+                        if del_resp.status_code in (200, 204):
+                            print(f"Deleted file: {name}")
+                        else:
+                            print(f"Failed to delete file {name}: {del_resp.status_code} {del_resp.text}")
+                    elif item['type'] == "dir" and name != ".github":
+                        print(f"Manual deletion required for directory: {name}")
+            else:
+                print(f"Failed to list repo contents: {response.status_code} {response.text}")
         return
 
     if args.populate_issues:
