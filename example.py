@@ -102,8 +102,7 @@ def populate_repo_with_issues():
         print(f"Failed to reset hello.c: {update_err}")
         # We will continue even if this fails, as the file might be in the right state.
 
-    print("Closing all open issues in the repo...")
-    close_all_open_issues(github_token, owner, repo)
+    # Issue deletion is now handled by --delete-issues, not here
     print("Populating repo with issues...")
     # 5 issues suitable for Copilot (code modifications)
     copilot_issues = [
@@ -174,11 +173,28 @@ def main():
                        help='Automatically merge reviewed PRs with no conflicts')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
-    parser.add_argument('--populate-repo', action='store_true',
+    parser.add_argument('--populate-issues', action='store_true',
                           help='Populate the repo with example issues before running.')
+    parser.add_argument('--delete-issues', action='store_true',
+                          help='Delete (close) all issues in the specified repositories.')
     args = parser.parse_args()
 
-    if args.populate_repo:
+    if args.delete_issues:
+        if args.user:
+            print("--delete-issues does not support --user mode. Please specify repositories explicitly.")
+            return
+        github_token = os.getenv('GITHUB_TOKEN')
+        if not github_token:
+            print("GITHUB_TOKEN not set. Cannot delete issues.")
+            return
+        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        for repo_full_name in repo_names:
+            owner, repo = repo_full_name.split('/')
+            print(f"Deleting (closing) all issues in {repo_full_name}...")
+            close_all_open_issues(github_token, owner, repo)
+        return
+
+    if args.populate_issues:
         populate_repo_with_issues()
         return
 
