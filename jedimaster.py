@@ -431,16 +431,15 @@ class JediMaster:
             pulls = list(repo.get_pulls(state='open'))
             self.logger.info(f"Fetched {len(pulls)} open PRs from {repo_name}")
             for pr in pulls:
-                # Only process PRs that are in 'Waiting for review' state, approximated by having requested reviewers
-                waiting_for_review = False
-                try:
-                    reviewers = list(getattr(pr, 'requested_reviewers', []))
-                    team_reviewers = list(getattr(pr, 'requested_teams', []))
-                    waiting_for_review = bool(reviewers or team_reviewers)
-                except Exception as e:
-                    self.logger.warning(f"Could not determine reviewers for PR #{pr.number}: {e}")
-                if not waiting_for_review:
+                # Get detailed review state information using GraphQL
+                pr_data = self._get_pr_review_states(repo_name, pr.number)
+                
+                # Only process PRs that truly need review based on their current state
+                if not self._should_process_pr(pr_data):
+                    self.logger.info(f"Skipping PR #{pr.number} - not waiting for review or already has decision")
                     continue
+                
+                self.logger.info(f"Processing PR #{pr.number} - needs review")
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
                     diff = pr.diff_url
@@ -456,23 +455,69 @@ class JediMaster:
                     self.logger.warning(f"Could not get diff for PR #{pr.number}: {e}")
                 result = self.pr_decider.evaluate_pr(pr_text)
                 print(result)
+                
+                # Double-check review state before taking action to avoid conflicts
+                current_pr_data = self._get_pr_review_states(repo_name, pr.number)
+                if not self._should_process_pr(current_pr_data):
+                    self.logger.info(f"PR #{pr.number} state changed during processing, skipping action")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'skipped', 'reason': 'state_changed'})
+                    continue
+                
                 if 'comment' in result:
                     try:
-                        pr.create_issue_comment(result['comment'])
-                        self.logger.info(f"Commented on PR #{pr.number} in {repo_name}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'commented', 'comment': result['comment']})
+                        # Submit a CHANGES_REQUESTED review with the comment instead of just commenting
+                        pr.create_review(event='REQUEST_CHANGES', body=result['comment'])
+                        self.logger.info(f"Requested changes on PR #{pr.number} in {repo_name}")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'changes_requested', 'comment': result['comment']})
                     except Exception as e:
-                        self.logger.error(f"Failed to comment on PR #{pr.number}: {e}")
+                        self.logger.error(f"Failed to request changes on PR #{pr.number}: {e}")
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
                 elif result.get('decision') == 'accept':
-                    self.logger.info(f"PR #{pr.number} in {repo_name} can be accepted as-is.")
-                    try:
-                        pr.create_review(event='APPROVE', body='Automatically approved by JediMaster.')
-                        self.logger.info(f"Approved PR #{pr.number} in {repo_name}.")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'approved'})
-                    except Exception as e:
-                        self.logger.error(f"Failed to submit review for PR #{pr.number}: {e}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
+                    # Check if PR is already approved by someone else
+                    reviews = current_pr_data.get('reviews', {}).get('nodes', [])
+                    already_approved = any(review.get('state') == 'APPROVED' for review in reviews)
+                    is_draft = current_pr_data.get('isDraft', False)
+                    
+                    if already_approved:
+                        self.logger.info(f"PR #{pr.number} already has approval, skipping duplicate approval")
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'skipped', 'reason': 'already_approved'})
+                    else:
+                        self.logger.info(f"PR #{pr.number} in {repo_name} can be accepted as-is.")
+                        try:
+                            # If it's a draft PR, mark as ready for review first
+                            if is_draft:
+                                self.logger.info(f"PR #{pr.number} is a draft, marking as ready for review before approval")
+                                try:
+                                    # Use the existing GraphQL mutation from merge_reviewed_pull_requests
+                                    mutation = """
+                                    mutation($pullRequestId: ID!) {
+                                      markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
+                                        pullRequest {
+                                          isDraft
+                                        }
+                                      }
+                                    }
+                                    """
+                                    pr_id = current_pr_data.get('id')
+                                    if pr_id:
+                                        mutation_vars = {"pullRequestId": pr_id}
+                                        mutation_result = self._graphql_request(mutation, mutation_vars)
+                                        if 'errors' in mutation_result:
+                                            self.logger.error(f"GraphQL mutation errors: {mutation_result['errors']}")
+                                        else:
+                                            self.logger.info(f"Successfully marked draft PR #{pr.number} as ready for review")
+                                    else:
+                                        self.logger.warning(f"Could not get PR ID for draft PR #{pr.number}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to mark draft PR #{pr.number} as ready for review: {e}")
+                                    # Continue with approval anyway
+                            
+                            pr.create_review(event='APPROVE', body='Automatically approved by JediMaster.')
+                            self.logger.info(f"Approved PR #{pr.number} in {repo_name}.")
+                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'approved', 'was_draft': is_draft})
+                        except Exception as e:
+                            self.logger.error(f"Failed to submit review for PR #{pr.number}: {e}")
+                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
                 else:
                     self.logger.warning(f"Unexpected PRDeciderAgent result for PR #{pr.number}: {result}")
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'unknown', 'result': result})
@@ -503,6 +548,112 @@ class JediMaster:
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         return response.json()
+
+    def _get_pr_review_states(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
+        """Get the review states for a PR using GraphQL."""
+        owner, name = repo_name.split('/')
+        query = """
+        query($owner: String!, $name: String!, $number: Int!) {
+            repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                    id
+                    isDraft
+                    reviewRequests(first: 10) {
+                        totalCount
+                    }
+                    reviews(first: 20, states: [APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING]) {
+                        nodes {
+                            id
+                            state
+                            author {
+                                login
+                            }
+                            createdAt
+                        }
+                    }
+                }
+            }
+        }
+        """
+        variables = {
+            "owner": owner,
+            "name": name,
+            "number": pr_number
+        }
+        try:
+            result = self._graphql_request(query, variables)
+            if 'errors' in result:
+                self.logger.error(f"GraphQL errors fetching PR review states: {result['errors']}")
+                return {}
+            return result.get('data', {}).get('repository', {}).get('pullRequest', {})
+        except Exception as e:
+            self.logger.error(f"Error fetching PR review states for #{pr_number}: {e}")
+            return {}
+
+    def _should_process_pr(self, pr_data: Dict[str, Any]) -> bool:
+        """Determine if a PR should be processed based on its review state."""
+        if not pr_data:
+            self.logger.debug("No PR data available, skipping")
+            return False
+        
+        # Check if PR is in draft state
+        is_draft = pr_data.get('isDraft', False)
+        
+        # Check if there are pending review requests
+        review_requests = pr_data.get('reviewRequests', {})
+        has_pending_requests = review_requests.get('totalCount', 0) > 0
+        self.logger.debug(f"PR is draft: {is_draft}, has {review_requests.get('totalCount', 0)} pending review requests")
+        
+        # For draft PRs, only process if they have review requests
+        # This indicates the author wants review despite being in draft
+        if is_draft:
+            if has_pending_requests:
+                self.logger.debug("Draft PR with review requests - processing")
+                return True
+            else:
+                self.logger.debug("Draft PR without review requests - skipping")
+                return False
+        
+        # For non-draft PRs, continue with existing logic
+        # Check existing review states
+        reviews = pr_data.get('reviews', {}).get('nodes', [])
+        if not reviews:
+            # No reviews yet, process if there are review requests
+            self.logger.debug(f"No existing reviews, processing: {has_pending_requests}")
+            return has_pending_requests
+        
+        # Get the most recent review state from each reviewer
+        latest_reviews = {}
+        for review in reviews:
+            author = review.get('author', {}).get('login')
+            if author:
+                # Keep only the most recent review per author
+                if author not in latest_reviews or review['createdAt'] > latest_reviews[author]['createdAt']:
+                    latest_reviews[author] = review
+        
+        self.logger.debug(f"Found {len(latest_reviews)} unique reviewers with states: {[r.get('state') for r in latest_reviews.values()]}")
+        
+        # Check if there are any blocking states
+        for author, review in latest_reviews.items():
+            state = review.get('state')
+            if state == 'CHANGES_REQUESTED':
+                # Don't process PRs that have requested changes
+                self.logger.debug(f"PR has CHANGES_REQUESTED from {author}, skipping")
+                return False
+            elif state == 'APPROVED':
+                # Don't process already approved PRs (unless there are new review requests)
+                if not has_pending_requests:
+                    self.logger.debug(f"PR already APPROVED by {author} with no pending requests, skipping")
+                    return False
+        
+        # Process if:
+        # 1. There are pending review requests, OR
+        # 2. All existing reviews are just COMMENTED/PENDING (no approval or changes requested)
+        should_process = has_pending_requests or any(
+            review.get('state') in ['COMMENTED', 'PENDING'] for review in latest_reviews.values()
+        )
+        self.logger.debug(f"Final decision to process PR: {should_process}")
+        return should_process
 
 
     def process_user(self, username: str) -> ProcessingReport:
@@ -565,40 +716,58 @@ class JediMaster:
             try:
                 if self.process_prs:
                     pr_results.extend(self.process_pull_requests(repo_name))
-                issues = self.fetch_issues(repo_name)
-                for issue in issues:
-                    if issue.pull_request:
-                        continue
-                    result = self.process_issue(issue, repo_name)
-                    all_results.append(result)
+                else:
+                    # Only process issues if not doing PR processing
+                    issues = self.fetch_issues(repo_name)
+                    for issue in issues:
+                        if issue.pull_request:
+                            continue
+                        result = self.process_issue(issue, repo_name)
+                        all_results.append(result)
             except Exception as e:
                 self.logger.error(f"Failed to process repository {repo_name}: {e}")
-                all_results.append(IssueResult(
-                    repo=repo_name,
-                    issue_number=0,
-                    title=f"Repository Error: {repo_name}",
-                    url='',
-                    status='error',
-                    error_message=str(e)
-                ))
-        assigned_count = sum(1 for r in all_results if r.status == 'assigned')
-        not_assigned_count = sum(1 for r in all_results if r.status == 'not_assigned')
-        already_assigned_count = sum(1 for r in all_results if r.status == 'already_assigned')
-        labeled_count = sum(1 for r in all_results if r.status == 'labeled')
-        error_count = sum(1 for r in all_results if r.status == 'error')
-        report = ProcessingReport(
-            total_issues=len(all_results),
-            assigned=assigned_count,
-            not_assigned=not_assigned_count,
-            already_assigned=already_assigned_count,
-            labeled=labeled_count,
-            errors=error_count,
-            results=all_results
-        )
-        if self.process_prs and pr_results:
-            print("\nPULL REQUEST PROCESSING RESULTS:")
-            for prr in pr_results:
-                print(prr)
+                if not self.process_prs:  # Only add issue error results when processing issues
+                    all_results.append(IssueResult(
+                        repo=repo_name,
+                        issue_number=0,
+                        title=f"Repository Error: {repo_name}",
+                        url='',
+                        status='error',
+                        error_message=str(e)
+                    ))
+        
+        # Calculate statistics based on what was actually processed
+        if self.process_prs:
+            # When processing PRs, create a minimal report focused on PR results
+            report = ProcessingReport(
+                total_issues=0,  # No issues processed
+                assigned=0,
+                not_assigned=0,
+                already_assigned=0,
+                labeled=0,
+                errors=0,
+                results=[]  # No issue results
+            )
+            if pr_results:
+                print("\nPULL REQUEST PROCESSING RESULTS:")
+                for prr in pr_results:
+                    print(prr)
+        else:
+            # When processing issues, create standard issue report
+            assigned_count = sum(1 for r in all_results if r.status == 'assigned')
+            not_assigned_count = sum(1 for r in all_results if r.status == 'not_assigned')
+            already_assigned_count = sum(1 for r in all_results if r.status == 'already_assigned')
+            labeled_count = sum(1 for r in all_results if r.status == 'labeled')
+            error_count = sum(1 for r in all_results if r.status == 'error')
+            report = ProcessingReport(
+                total_issues=len(all_results),
+                assigned=assigned_count,
+                not_assigned=not_assigned_count,
+                already_assigned=already_assigned_count,
+                labeled=labeled_count,
+                errors=error_count,
+                results=all_results
+            )
         return report
 
     def save_report(self, report: ProcessingReport, filename: Optional[str] = None) -> str:

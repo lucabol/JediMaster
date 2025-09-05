@@ -142,13 +142,17 @@ class PRDeciderAgent:
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
     "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
+    "You must make a binary decision for each PR:\n\n"
     "Respond with a JSON object containing either:\n"
-    "- 'decision': 'accept' if the PR can be merged as-is, or\n"
-    "- 'comment': a string with constructive feedback to be inserted as a PR comment if changes are needed.\n"
-    "Given the full text of a pull request (including title, description, and code changes):\n"
-    "- If the PR is well written and satisfies all requirements, reply with {'decision': 'accept'}.\n"
-    "- Otherwise, reply with {'comment': 'Please add more comments to your code changes.'}.\n"
-    "Ensure your response is a valid JSON object with either 'decision' or 'comment'"
+    "- {'decision': 'accept'} if the PR can be merged as-is\n"
+    "- {'comment': 'detailed feedback'} if changes are needed\n\n"
+    "When you provide a comment, the PR will get a formal CHANGES_REQUESTED review state.\n"
+    "When you accept, the PR will get an APPROVED review state.\n\n"
+    "Guidelines:\n"
+    "- Accept PRs that are well-written, properly tested, and ready to merge\n"
+    "- Request changes for PRs that need improvements, missing tests, unclear code, etc.\n"
+    "- Provide specific, actionable feedback in your comments\n"
+    "- Consider code quality, completeness, and adherence to best practices"
 )
 
     def evaluate_pr(self, pr_text: str) -> dict:

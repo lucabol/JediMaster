@@ -153,7 +153,7 @@ def main():
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
     parser.add_argument('--process-prs', action='store_true',
-                       help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
+                       help='ONLY process pull requests (no issue assignment/labeling). Results in formal APPROVED or CHANGES_REQUESTED review states. Includes draft PRs with review requests.')
     parser.add_argument('--repos', type=str, default='lucabol/Hello-World',
                        help='Comma-separated list of repositories to process (default: lucabol/Hello-World)')
     parser.add_argument('--user', type=str, default=None,
