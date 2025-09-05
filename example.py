@@ -144,29 +144,47 @@ def populate_repo_with_issues():
 
 def main():
     """Example of using JediMaster programmatically."""
-      # Parse command-line arguments
-    parser = argparse.ArgumentParser(description='Example usage of JediMaster')
-    parser.add_argument('--just-label', action='store_true', default=True,
-                       help='Only add labels to issues, do not assign them (default: True)')
-    parser.add_argument('--assign', action='store_true',
-                       help='Assign issues to Copilot instead of just labeling')
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Example usage of JediMaster - Label or assign GitHub issues to Copilot and optionally process PRs')
+
+    # Create mutually exclusive group for repositories vs user (similar to jedimaster.py)
+    group = parser.add_mutually_exclusive_group(required=False)  # Not required for example script
+    group.add_argument('repositories', nargs='*', default=['lucabol/Hello-World'],
+                       help='GitHub repositories to process (format: owner/repo)')
+    group.add_argument('--user', '-u',
+                       help='GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)')
+
+    # Core parameters matching jedimaster.py
+    parser.add_argument('--output', '-o',
+                       help='Output filename for the report (default: auto-generated)')
+    parser.add_argument('--verbose', '-v', action='store_true',
+                       help='Enable verbose logging')
+    parser.add_argument('--just-label', action='store_true',
+                       help='Only add labels to issues, do not assign them to Copilot')
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
     parser.add_argument('--process-prs', action='store_true',
-                       help='ONLY process pull requests (no issue assignment/labeling). Results in formal APPROVED or CHANGES_REQUESTED review states. Includes draft PRs with review requests.')
-    parser.add_argument('--repos', type=str, default='lucabol/Hello-World',
-                       help='Comma-separated list of repositories to process (default: lucabol/Hello-World)')
-    parser.add_argument('--user', type=str, default=None,
-                       help='Process all repositories for a given user (overrides --repos if provided)')
+                       help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
     parser.add_argument('--auto-merge-reviewed', action='store_true',
                        help='Automatically merge reviewed PRs with no conflicts')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+
+    # Example-specific parameters
+    parser.add_argument('--assign', action='store_true',
+                       help='Assign issues to Copilot instead of just labeling (overrides --just-label)')
     parser.add_argument('--populate-issues', action='store_true',
-                          help='Populate the repo with example issues before running.')
+                       help='Populate the repo with example issues before running.')
     parser.add_argument('--reset-repo', action='store_true',
-                          help='Reset the repo: close all issues, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
+                       help='Reset the repo: close all issues, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
+
     args = parser.parse_args()
+
+    # Validate arguments (similar to jedimaster.py)
+    if not args.user and not args.repositories:
+        # For example.py, we set a default repository, so this shouldn't happen
+        # but we'll keep the check for consistency
+        pass
 
     if args.reset_repo:
         if args.user:
@@ -176,7 +194,7 @@ def main():
         if not github_token:
             print("GITHUB_TOKEN not set. Cannot reset repo.")
             return
-        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             owner, repo = repo_full_name.split('/')
             print(f"Closing all issues in {repo_full_name}...")
@@ -253,7 +271,7 @@ def main():
         populate_repo_with_issues()
         return
 
-    # Determine just_label value (--assign overrides the default)
+    # Determine just_label value (--assign overrides --just-label)
     just_label = not args.assign if args.assign else args.just_label
 
     # Determine filtering method
@@ -271,12 +289,17 @@ def main():
         print("Either in a .env file or as system environment variables")
         return
 
+    # Set up logging level (like jedimaster.py)
+    if args.verbose:
+        import logging
+        logging.getLogger('jedimaster').setLevel(logging.DEBUG)
+
     # If --create-issues is set, use CreatorAgent for each repo
     if getattr(args, 'create_issues', False):
         if args.user:
             print("--create-issues does not support --user mode. Please specify repositories explicitly.")
             return
-        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
             creator = CreatorAgent(github_token, openai_api_key, repo_full_name)
@@ -334,7 +357,7 @@ def main():
                 print(f"Error accessing user {username}: {e}")
                 return
         else:
-            repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+            repo_names = args.repositories  # Now using positional argument
         
         print(f"Checking {len(repo_names)} repositories for auto-merge candidates...")
         
@@ -358,12 +381,12 @@ def main():
         report = jedimaster.process_user(username)
         repo_names = [r.repo for r in report.results] if report.results else []
     else:
-        repo_names = [r.strip() for r in args.repos.split(',') if r.strip()]
+        repo_names = args.repositories  # Now using positional argument
         print(f"Processing repositories: {repo_names}")
         report = jedimaster.process_repositories(repo_names)
 
     # Save report
-    filename = jedimaster.save_report(report, "example_report.json")
+    filename = jedimaster.save_report(report, args.output)  # Use --output parameter
 
     # Print summary
     jedimaster.print_summary(report)

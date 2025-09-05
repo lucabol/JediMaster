@@ -22,7 +22,7 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 
 1. **Clone the repository:**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/lucabol/JediMaster.git
    cd JediMaster
    ```
 
@@ -31,10 +31,19 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
    pip install -r requirements.txt
    ```
 
+3. **Set up environment variables:**
 
+   Required environment variables:
+   - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
+   - `OPENAI_API_KEY`: Your OpenAI API key
+
+   Optional environment variables:
+   - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
    - `TIMER_USERNAME` (optional): Used by timer-triggered Azure Functions to specify the GitHub username whose repositories should be processed on schedule.
      - Example: `TIMER_USERNAME=github-username`
      - Only needed for timer-based automation; not required for manual/scripted runs.
+   - `TIMER_REPOS` (optional): Comma-separated list of repositories for timer-triggered Azure Functions
+     - Example: `TIMER_REPOS=owner/repo1,owner/repo2`
 
    You can use a `.env` file or set them in your shell:
    ```bash
@@ -66,6 +75,8 @@ python jedimaster.py owner/repo1 owner/repo2
 Process all repositories for a user:
 ```bash
 python jedimaster.py --user github-username
+# or using short form:
+python jedimaster.py -u github-username
 ```
 
 Process open pull requests for one or more repositories:
@@ -76,25 +87,31 @@ python jedimaster.py --process-prs owner/repo1 owner/repo2
 Process open pull requests for all repositories for a user:
 ```bash
 python jedimaster.py --user github-username --process-prs
+# or using short form:
+python jedimaster.py -u github-username --process-prs
 ```
 
 
 
 **Options:**
 
-- `--create-issues`         Use LLM to suggest and open new issues in the specified repositories. Prints the full LLM conversation (prompts and response) for transparency and debugging. Example:
-
-  ```bash
-  python jedimaster.py --create-issues owner/repo1 owner/repo2
-  ```
-
-- `--process-prs`           Process open pull requests using AI review (PRDeciderAgent)
-- `--auto-merge-reviewed`   Automatically merge reviewed PRs with no conflicts
+- `--user, -u USERNAME`     GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)
+- `--output, -o FILENAME`   Output filename for the report (default: auto-generated)
+- `--verbose, -v`           Enable verbose logging
 - `--just-label`            Only add labels to issues, do not assign them to Copilot
 - `--use-file-filter`       Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)
-- `-o, --output FILENAME`   Output filename for the report (default: auto-generated)
-- `-v, --verbose`           Enable verbose logging
-- `-h, --help`              Show help message
+- `--process-prs`           Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)
+- `--auto-merge-reviewed`   Automatically merge reviewed PRs with no conflicts
+- `--create-issues`         Use CreatorAgent to suggest and open new issues in the specified repositories
+
+**CreatorAgent Example:**
+
+Create new issues using AI suggestions:
+```bash
+python jedimaster.py --create-issues owner/repo1 owner/repo2
+```
+
+This option uses LLM to suggest and open new issues in the specified repositories. It prints the full LLM conversation (prompts and response) for transparency and debugging.
 
 ---
 
