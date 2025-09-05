@@ -21,9 +21,10 @@ class CreatorAgent:
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
             "You are an expert AI assistant tasked with analyzing a GitHub repository and suggesting actionable, concrete issues that could be opened to improve the project. "
-            "Return a JSON array of objects, each with a 'title' and 'body' field. "
+            "Return your answer as a JSON array (not a single object, not a dict with 'suggestions'), where each element is an object with 'title' and 'body' fields. "
             "Each issue should be specific, actionable, and relevant to the code or documentation. "
-            "Do not include duplicate or trivial issues."
+            "Do not include duplicate or trivial issues. "
+            "Do NOT return a single object or a dict with 'suggestions'. Always return a JSON array of objects."
         )
 
     def _gather_repo_context(self, max_chars: int = 12000) -> str:
@@ -80,7 +81,8 @@ class CreatorAgent:
         context = self._gather_repo_context()
         user_prompt = (
             f"Given the following repository context, suggest up to {max_issues} new GitHub issues. "
-            "Return a JSON array of objects, each with 'title' and 'body'.\n\n"
+            "Return your answer as a JSON array (not a single object, not a dict with 'suggestions'), where each element is an object with 'title' and 'body' fields. "
+            "Do NOT return a single object or a dict with 'suggestions'. Always return a JSON array of objects.\n\n"
             f"Repository context:\n{context}"
         )
         messages = [
@@ -104,13 +106,16 @@ class CreatorAgent:
             raise ValueError("LLM returned empty response")
         try:
             issues = json.loads(result_text)
-            # Accept either a top-level list or a dict with 'suggestions' key
+            # Accept either a top-level list, a dict with 'suggestions', or a single issue dict
             if isinstance(issues, list):
                 return issues[:max_issues]
-            elif isinstance(issues, dict) and 'suggestions' in issues and isinstance(issues['suggestions'], list):
-                return issues['suggestions'][:max_issues]
-            else:
-                raise ValueError("LLM did not return a list of issues or a dict with 'suggestions' list")
+            elif isinstance(issues, dict):
+                if 'suggestions' in issues and isinstance(issues['suggestions'], list):
+                    return issues['suggestions'][:max_issues]
+                # Handle single issue dict with 'title' and 'body'
+                elif 'title' in issues and 'body' in issues:
+                    return [issues]
+            raise ValueError("LLM did not return a list of issues, a dict with 'suggestions' list, or a single issue dict")
         except Exception as e:
             self.logger.error(f"Failed to parse LLM response: {e}")
             # Still return empty, but conversation is available for printing

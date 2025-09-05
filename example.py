@@ -5,6 +5,7 @@ Example usage of JediMaster as a library.
 
 import os
 import argparse
+import base64
 from dotenv import load_dotenv
 from jedimaster import JediMaster
 from creator import CreatorAgent
@@ -47,6 +48,39 @@ def close_all_open_issues(token, owner, repo):
         else:
             print(f"Failed to close issue #{issue_number}: {close_resp.status_code} {close_resp.text}")
 
+def update_github_file(token, owner, repo, path, new_content, commit_message):
+    """Update a file in a GitHub repository."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+    # Get the current file to get its SHA
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        # If the file doesn't exist, we can't get a SHA, but we can create it.
+        # The API for creation is the same, just without the 'sha' field.
+        file_sha = None
+    else:
+        file_sha = response.json()['sha']
+
+    # Encode the new content in base64
+    encoded_content = base64.b64encode(new_content.encode('utf-8')).decode('utf-8')
+
+    # Prepare the data for the update
+    data = {
+        "message": commit_message,
+        "content": encoded_content,
+    }
+    if file_sha:
+        data["sha"] = file_sha
+
+    # Make the PUT request to update the file
+    update_response = requests.put(url, headers=headers, json=data)
+
+    if update_response.status_code == 200 or update_response.status_code == 201:
+        return True, None
+    else:
+        return False, f"Error {update_response.status_code}: {update_response.text}"
+
 def populate_repo_with_issues():
     """Close all existing issues, then add 10 issues (5 good for Copilot, 5 not) to lucabol/Hello-World."""
     github_token = os.getenv('GITHUB_TOKEN')
@@ -55,6 +89,19 @@ def populate_repo_with_issues():
         exit(1)
     owner = "lucabol"
     repo = "Hello-World"
+
+    # Reset hello.c to a known state
+    print("Resetting hello.c to its initial state...")
+    hello_c_content = '# include <stdio.h>\n \nint main(){\n    printf("Hello world!\\n\\n");\n}'
+    update_ok, update_err = update_github_file(
+        github_token, owner, repo, "hello.c", hello_c_content, "Reset hello.c for testing"
+    )
+    if update_ok:
+        print("hello.c has been reset successfully.")
+    else:
+        print(f"Failed to reset hello.c: {update_err}")
+        # We will continue even if this fails, as the file might be in the right state.
+
     print("Closing all open issues in the repo...")
     close_all_open_issues(github_token, owner, repo)
     print("Populating repo with issues...")
