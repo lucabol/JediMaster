@@ -143,6 +143,97 @@ class JediMaster:
         except Exception as e:
             self.logger.error(f"Error assigning issue via GraphQL: {e}")
             return False
+
+    def _get_pr_id_and_bot_id(self, repo_owner: str, repo_name: str, pr_number: int) -> tuple[Optional[str], Optional[str]]:
+        """Get the GitHub node ID for a PR and find the Copilot bot using suggestedActors."""
+        query = """
+        query($owner: String!, $name: String!, $prNumber: Int!) {
+          repository(owner: $owner, name: $name) {
+            pullRequest(number: $prNumber) {
+              id
+            }
+            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+              nodes {
+                login
+                __typename
+                ... on Bot {
+                  id
+                }
+                ... on User {
+                  id
+                }
+              }
+            }
+          }
+        }
+        """
+        variables = {
+            "owner": repo_owner,
+            "name": repo_name,
+            "prNumber": pr_number
+        }
+        try:
+            result = self._graphql_request(query, variables)
+            if "errors" in result:
+                self.logger.error(f"GraphQL errors: {result['errors']}")
+                return None, None
+            data = result["data"]
+            pr_id = data["repository"]["pullRequest"]["id"]
+            bot_id = None
+            suggested_actors = data["repository"]["suggestedActors"]["nodes"]
+            for actor in suggested_actors:
+                login = actor["login"]
+                if login == "copilot-swe-agent" or "copilot" in login.lower():
+                    bot_id = actor["id"]
+                    self.logger.info(f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})")
+                    break
+            if not bot_id:
+                self.logger.warning(f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}")
+                if suggested_actors:
+                    actor_logins = [actor["login"] for actor in suggested_actors]
+                    self.logger.info(f"Available suggested actors: {actor_logins}")
+                else:
+                    self.logger.info("No suggested actors found - Copilot may not be enabled for this repository")
+            return pr_id, bot_id
+        except Exception as e:
+            self.logger.error(f"Error getting PR and bot IDs: {e}")
+            return None, None
+
+    def _assign_pr_via_graphql(self, pr_id: str, bot_id: str) -> bool:
+        """Assign a PR to a bot using GraphQL mutation."""
+        mutation = """
+        mutation($assignableId: ID!, $actorIds: [ID!]!) {
+          replaceActorsForAssignable(input: {assignableId: $assignableId, actorIds: $actorIds}) {
+            assignable {
+              ... on PullRequest {
+                id
+                title
+                assignees(first: 10) {
+                  nodes {
+                    login
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        variables = {
+            "assignableId": pr_id,
+            "actorIds": [bot_id]
+        }
+        try:
+            result = self._graphql_request(mutation, variables)
+            if "errors" in result:
+                self.logger.error(f"GraphQL mutation errors: {result['errors']}")
+                return False
+            assignees = result["data"]["replaceActorsForAssignable"]["assignable"]["assignees"]["nodes"]
+            assigned_logins = [assignee["login"] for assignee in assignees]
+            self.logger.info(f"Successfully assigned PR. Current assignees: {assigned_logins}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error assigning PR via GraphQL: {e}")
+            return False
     def _repo_has_topic(self, repo, topic: str) -> bool:
         """Check if a repository has a specific topic."""
         try:
@@ -389,10 +480,28 @@ class JediMaster:
                     self.logger.info(f"PR #{pr.number} in {repo_name} is approved but has conflicts, skipping merge")
                     # Add a comment to the PR about conflicts
                     try:
-                        pr.create_issue_comment("Please resolve conflicts")
+                        pr.create_issue_comment("@copilot please fix merge conflicts")
                         self.logger.info(f"Added conflict comment to PR #{pr.number} in {repo_name}")
                     except Exception as e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about conflicts: {e}")
+                    
+                    # Reassign to Copilot after adding comment about conflicts
+                    try:
+                        repo_parts = repo_name.split('/')
+                        repo_owner = repo_parts[0]
+                        repo_name_only = repo_parts[1]
+                        pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                        if pr_id and bot_id:
+                            success = self._assign_pr_via_graphql(pr_id, bot_id)
+                            if success:
+                                self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge conflicts")
+                            else:
+                                self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge conflict")
+                        else:
+                            self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                    
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Has merge conflicts'})
                     continue
                 elif pr.mergeable is None:
@@ -415,9 +524,59 @@ class JediMaster:
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merged'})
                     else:
                         self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name}: {merge_result.message}")
+                        
+                        # Add a comment about merge failure and reassign to Copilot
+                        try:
+                            pr.create_issue_comment(f"Auto-merge failed: {merge_result.message}. Please investigate.")
+                            self.logger.info(f"Added merge failure comment to PR #{pr.number} in {repo_name}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to comment on PR #{pr.number} about merge failure: {e}")
+                        
+                        # Reassign to Copilot after merge failure
+                        try:
+                            repo_parts = repo_name.split('/')
+                            repo_owner = repo_parts[0]
+                            repo_name_only = repo_parts[1]
+                            pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                            if pr_id and bot_id:
+                                success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                if success:
+                                    self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge failure")
+                                else:
+                                    self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge failure")
+                            else:
+                                self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                        
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': merge_result.message})
                 except Exception as e:
                     self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name}: {e}")
+                    
+                    # Add a comment about exception and reassign to Copilot
+                    try:
+                        pr.create_issue_comment(f"Auto-merge exception: {str(e)}. Please investigate.")
+                        self.logger.info(f"Added merge exception comment to PR #{pr.number} in {repo_name}")
+                    except Exception as comment_e:
+                        self.logger.error(f"Failed to comment on PR #{pr.number} about merge exception: {comment_e}")
+                    
+                    # Reassign to Copilot after merge exception
+                    try:
+                        repo_parts = repo_name.split('/')
+                        repo_owner = repo_parts[0]
+                        repo_name_only = repo_parts[1]
+                        pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                        if pr_id and bot_id:
+                            success = self._assign_pr_via_graphql(pr_id, bot_id)
+                            if success:
+                                self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge exception")
+                            else:
+                                self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge exception")
+                        else:
+                            self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                    except Exception as assign_e:
+                        self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
+                    
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': str(e)})
         except Exception as e:
             self.logger.error(f"Error merging reviewed PRs in {repo_name}: {e}")
