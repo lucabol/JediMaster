@@ -315,6 +315,36 @@ class JediMaster:
             self.logger.error(f"Error processing linked issues for PR #{pr_number}: {e}")
         
         return closed_issues
+    
+    def _delete_pr_branch(self, pr) -> bool:
+        """Delete the branch associated with a pull request after successful merge."""
+        try:
+            head_repo = pr.head.repo
+            head_branch_name = pr.head.ref
+            base_repo = pr.base.repo
+            
+            # Only delete the branch if it's from the same repository (not a fork)
+            if head_repo.full_name != base_repo.full_name:
+                self.logger.info(f"PR #{pr.number} is from a fork ({head_repo.full_name}), skipping branch deletion")
+                return False
+            
+            # Don't delete protected branches (main, master, develop, etc.)
+            protected_branches = ['main', 'master', 'develop', 'development', 'staging', 'production']
+            if head_branch_name.lower() in protected_branches:
+                self.logger.info(f"PR #{pr.number} branch '{head_branch_name}' is a protected branch, skipping deletion")
+                return False
+            
+            # Delete the branch
+            git_ref = head_repo.get_git_ref(f"heads/{head_branch_name}")
+            git_ref.delete()
+            
+            self.logger.info(f"Successfully deleted branch '{head_branch_name}' for PR #{pr.number}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error deleting branch for PR #{pr.number}: {e}")
+            return False
+    
     def _repo_has_topic(self, repo, topic: str) -> bool:
         """Check if a repository has a specific topic."""
         try:
@@ -610,6 +640,12 @@ class JediMaster:
                                 self.logger.info(f"Closed {len(closed_issues)} linked issues: {closed_issues}")
                         except Exception as e:
                             self.logger.error(f"Failed to close linked issues for PR #{pr.number}: {e}")
+                        
+                        # Delete the branch associated with the PR after successful merge
+                        try:
+                            self._delete_pr_branch(pr)
+                        except Exception as e:
+                            self.logger.error(f"Failed to delete branch for PR #{pr.number}: {e}")
                         
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merged'})
                     else:
