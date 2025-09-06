@@ -234,6 +234,87 @@ class JediMaster:
         except Exception as e:
             self.logger.error(f"Error assigning PR via GraphQL: {e}")
             return False
+
+    def _close_linked_issues(self, repo, pr_number: int, pr_title: str) -> List[int]:
+        """Find and close issues linked to a PR using GraphQL, returning list of closed issue numbers."""
+        closed_issues = []
+        
+        try:
+            # Use GraphQL to get the PR's closing issue references
+            repo_parts = repo.full_name.split('/')
+            query = """
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  id
+                  url
+                  closingIssuesReferences(first: 50) {
+                    edges {
+                      node {
+                        id
+                        body
+                        number
+                        title
+                        state
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+            
+            variables = {
+                "owner": repo_parts[0],
+                "name": repo_parts[1],
+                "number": pr_number
+            }
+            
+            result = self._graphql_request(query, variables)
+            if "errors" in result:
+                self.logger.error(f"GraphQL errors getting closing issues: {result['errors']}")
+                return closed_issues
+            
+            pr_data = result["data"]["repository"]["pullRequest"]
+            pr_url = pr_data["url"]
+            closing_issues = pr_data["closingIssuesReferences"]["edges"]
+            
+            self.logger.info(f"Found {len(closing_issues)} closing issue references for PR #{pr_number}")
+            
+            # Close each linked issue
+            for edge in closing_issues:
+                issue_data = edge["node"]
+                issue_number = issue_data["number"]
+                issue_state = issue_data["state"]
+                
+                try:
+                    if issue_state == 'OPEN':
+                        issue = repo.get_issue(issue_number)
+                        
+                        # Add a comment before closing
+                        close_comment = f"Closed by PR #{pr_number}: {pr_url}"
+                        issue.create_comment(close_comment)
+                        
+                        # Close the issue
+                        issue.edit(state='closed')
+                        
+                        self.logger.info(f"Closed issue #{issue_number} linked to PR #{pr_number}")
+                        closed_issues.append(issue_number)
+                    else:
+                        self.logger.info(f"Issue #{issue_number} linked to PR #{pr_number} was already closed")
+                        
+                except Exception as e:
+                    self.logger.error(f"Failed to close linked issue #{issue_number} for PR #{pr_number}: {e}")
+            
+            if closed_issues:
+                self.logger.info(f"Successfully closed {len(closed_issues)} issues linked to PR #{pr_number}: {closed_issues}")
+            else:
+                self.logger.debug(f"No open linked issues found for PR #{pr_number}")
+                
+        except Exception as e:
+            self.logger.error(f"Error processing linked issues for PR #{pr_number}: {e}")
+        
+        return closed_issues
     def _repo_has_topic(self, repo, topic: str) -> bool:
         """Check if a repository has a specific topic."""
         try:
@@ -521,6 +602,15 @@ class JediMaster:
                     merge_result = pr.merge(merge_method='squash', commit_message=f"Auto-merged by JediMaster: {pr.title}")
                     if merge_result.merged:
                         self.logger.info(f"Successfully auto-merged PR #{pr.number} in {repo_name}")
+                        
+                        # Close linked issues after successful merge
+                        try:
+                            closed_issues = self._close_linked_issues(repo, pr.number, pr.title)
+                            if closed_issues:
+                                self.logger.info(f"Closed {len(closed_issues)} linked issues: {closed_issues}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to close linked issues for PR #{pr.number}: {e}")
+                        
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merged'})
                     else:
                         self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name}: {merge_result.message}")
