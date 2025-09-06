@@ -715,9 +715,11 @@ class JediMaster:
                 if 'comment' in result:
                     try:
                         # Submit a CHANGES_REQUESTED review with the comment instead of just commenting
-                        pr.create_review(event='REQUEST_CHANGES', body=result['comment'])
+                        # Prepend @copilot to the comment so it gets assigned to copilot again
+                        comment_body = f"@copilot {result['comment']}"
+                        pr.create_review(event='REQUEST_CHANGES', body=comment_body)
                         self.logger.info(f"Requested changes on PR #{pr.number} in {repo_name}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'changes_requested', 'comment': result['comment']})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'changes_requested', 'comment': comment_body})
                     except Exception as e:
                         self.logger.error(f"Failed to request changes on PR #{pr.number}: {e}")
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
