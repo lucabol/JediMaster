@@ -48,6 +48,39 @@ def close_all_open_issues(token, owner, repo):
         else:
             print(f"Failed to close issue #{issue_number}: {close_resp.status_code} {close_resp.text}")
 
+def delete_all_branches_except_main(token, owner, repo):
+    """Delete all branches in the repository except 'main'."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/branches"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    
+    # First get the list of all branches
+    response = requests.get(url, headers=headers)
+    if response.status_code != 200:
+        print(f"Failed to fetch branches: {response.status_code} {response.text}")
+        return
+    
+    branches = response.json()
+    print(f"Found {len(branches)} branches in {owner}/{repo}")
+    
+    # Delete all branches except 'main'
+    for branch in branches:
+        branch_name = branch['name']
+        if branch_name == 'main':
+            print(f"Skipping main branch: {branch_name}")
+            continue
+        
+        # Delete the branch
+        delete_url = f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch_name}"
+        delete_resp = requests.delete(delete_url, headers=headers)
+        
+        if delete_resp.status_code == 204:
+            print(f"Deleted branch: {branch_name}")
+        elif delete_resp.status_code == 422:
+            # Branch might be protected or be the default branch
+            print(f"Cannot delete branch {branch_name}: likely protected or default branch")
+        else:
+            print(f"Failed to delete branch {branch_name}: {delete_resp.status_code} {delete_resp.text}")
+
 def update_github_file(token, owner, repo, path, new_content, commit_message):
     """Update a file in a GitHub repository."""
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
@@ -176,7 +209,7 @@ def main():
     parser.add_argument('--populate-issues', action='store_true',
                        help='Populate the repo with example issues before running.')
     parser.add_argument('--reset-repo', action='store_true',
-                       help='Reset the repo: close all issues, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
+                       help='Reset the repo: close all issues and PRs, delete all branches except main, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
 
     args = parser.parse_args()
 
@@ -216,6 +249,11 @@ def main():
                         print(f"Failed to close PR #{pr_number}: {patch_resp.status_code} {patch_resp.text}")
             else:
                 print(f"Failed to fetch open PRs: {pr_resp.status_code} {pr_resp.text}")
+            
+            # Delete all branches except 'main'
+            print(f"Deleting all branches except 'main' in {repo_full_name}...")
+            delete_all_branches_except_main(github_token, owner, repo)
+            
             # Recreate baseline hello.c
             baseline_hello = (
                 '# include <stdio.h>\n\n'
