@@ -9,6 +9,7 @@ import base64
 from dotenv import load_dotenv
 from jedimaster import JediMaster
 from creator import CreatorAgent
+from reset_utils import reset_repository
 
 # Utility functions for repo/issue management
 
@@ -227,82 +228,16 @@ def main():
         if not github_token:
             print("GITHUB_TOKEN not set. Cannot reset repo.")
             return
-        repo_names = args.repositories  # Now using positional argument
+        repo_names = args.repositories
+        import logging
+        logger = logging.getLogger('reset')
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            logger.addHandler(logging.StreamHandler())
         for repo_full_name in repo_names:
-            owner, repo = repo_full_name.split('/')
-            print(f"Closing all issues in {repo_full_name}...")
-            close_all_open_issues(github_token, owner, repo)
-            # Close all open PRs
-            print(f"Closing all PRs in {repo_full_name}...")
-            headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
-            pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls?state=open&per_page=100"
-            pr_resp = requests.get(pr_url, headers=headers)
-            if pr_resp.status_code == 200:
-                prs = pr_resp.json()
-                for pr in prs:
-                    pr_number = pr['number']
-                    close_pr_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-                    patch_resp = requests.patch(close_pr_url, headers=headers, json={"state": "closed"})
-                    if patch_resp.status_code == 200:
-                        print(f"Closed PR #{pr_number}")
-                    else:
-                        print(f"Failed to close PR #{pr_number}: {patch_resp.status_code} {patch_resp.text}")
-            else:
-                print(f"Failed to fetch open PRs: {pr_resp.status_code} {pr_resp.text}")
-            
-            # Delete all branches except 'main'
-            print(f"Deleting all branches except 'main' in {repo_full_name}...")
-            delete_all_branches_except_main(github_token, owner, repo)
-            
-            # Recreate baseline hello.c
-            baseline_hello = (
-                '# include <stdio.h>\n\n'
-                'int main(){\n'
-                '    printf("Hello world!");\n'
-                '}\n'
-            )
-            ok_file, err_file = update_github_file(
-                github_token, owner, repo, 'hello.c', baseline_hello, 'Reset baseline hello.c for repo reset'
-            )
-            if ok_file:
-                print('Recreated hello.c baseline.')
-            else:
-                print(f'Failed to recreate hello.c: {err_file}')
-            
-            # Reset README.md to baseline content
-            baseline_readme = "# Hello World\n Test repo for JediMaster"
-            ok_readme, err_readme = update_github_file(
-                github_token, owner, repo, 'README.md', baseline_readme, 'Reset baseline README.md for repo reset'
-            )
-            if ok_readme:
-                print('Recreated README.md baseline.')
-            else:
-                print(f'Failed to recreate README.md: {err_readme}')
-            
-            print(f"Deleting unwanted files in {repo_full_name}...")
-            url = f"https://api.github.com/repos/{owner}/{repo}/contents"
-            headers = {"Authorization": f"token {github_token}", "Accept": "application/vnd.github.v3+json"}
-            response = requests.get(url, headers=headers)
-            if response.status_code == 200:
-                files = response.json()
-                allowed = {"hello.c", ".gitignore", "README.md"}
-                for item in files:
-                    name = item['name']
-                    path = item['path']
-                    if name in allowed or (name == ".github" and item['type'] == "dir"):
-                        continue
-                    # Delete file or directory
-                    if item['type'] == "file":
-                        del_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-                        del_resp = requests.delete(del_url, headers=headers, json={"message": f"Remove {name} for repo reset", "sha": item['sha']})
-                        if del_resp.status_code in (200, 204):
-                            print(f"Deleted file: {name}")
-                        else:
-                            print(f"Failed to delete file {name}: {del_resp.status_code} {del_resp.text}")
-                    elif item['type'] == "dir" and name != ".github":
-                        print(f"Manual deletion required for directory: {name}")
-            else:
-                print(f"Failed to list repo contents: {response.status_code} {response.text}")
+            print(f"Resetting {repo_full_name}...")
+            summary = reset_repository(github_token, repo_full_name, logger)
+            print(summary)
         return
 
     if args.populate_issues:

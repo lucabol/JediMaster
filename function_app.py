@@ -4,6 +4,7 @@ from datetime import datetime
 
 from jedimaster import JediMaster
 from creator import CreatorAgent
+from reset_utils import reset_repository
 
 app = func.FunctionApp()
 
@@ -151,3 +152,30 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         logging.info("[AutomateRepos] Summary JSON: %s", json.dumps(summary)[:4000])
     except Exception:
         pass
+
+@app.function_name(name="ResetRepositories")
+@app.route(route="reset", methods=[func.HttpMethod.POST], auth_level=func.AuthLevel.FUNCTION)
+def ResetRepositories(req: func.HttpRequest) -> func.HttpResponse:
+    """HTTP endpoint to reset all repositories listed in AUTOMATION_REPOS.
+    Reuses the logic from example reset process (close issues/PRs, delete branches except main, restore baseline files, prune others).
+    """
+    github_token = os.getenv('GITHUB_TOKEN')
+    repos_env = os.getenv('AUTOMATION_REPOS')
+    if not github_token or not repos_env:
+        return func.HttpResponse(
+            json.dumps({"error": "Missing GITHUB_TOKEN or AUTOMATION_REPOS"}),
+            status_code=400,
+            mimetype="application/json"
+        )
+    repo_names = [r.strip() for r in repos_env.split(',') if r.strip()]
+    summaries = []
+    errors = []
+    for full in repo_names:
+        try:
+            logging.info(f"[ResetRepositories] Resetting {full}")
+            summaries.append(reset_repository(github_token, full, logging.getLogger('jedimaster')))
+        except Exception as e:
+            logging.error(f"[ResetRepositories] Failed to reset {full}: {e}")
+            errors.append({"repo": full, "error": str(e)})
+    body = {"repositories": repo_names, "results": summaries, "errors": errors}
+    return func.HttpResponse(json.dumps(body), status_code=200, mimetype="application/json")

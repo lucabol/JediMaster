@@ -17,6 +17,23 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 - **Comprehensive Reporting**: Generates detailed JSON reports.
 - **Robust Error Handling**: Handles API, network, and data errors gracefully.
 
+### Reset Endpoint (Azure Function)
+
+An HTTP endpoint `/api/reset` is available (auth level `function`) that resets every repository listed in the `AUTOMATION_REPOS` environment variable. It performs the same destructive baseline reset logic as `example.py --reset-repo`:
+
+Steps per repository:
+- Close all open issues (excluding PRs)
+- Close all open pull requests
+- Delete all branches except `main`
+- Restore baseline `hello.c` and `README.md`
+- Delete other root-level files except: `hello.c`, `.gitignore`, `README.md`, and the `.github` directory
+
+Example local invocation (PowerShell / curl):
+```bash
+curl -X POST -H "x-functions-key: <FUNCTION_KEY>" http://localhost:7071/api/reset
+```
+Response JSON returns a per-repository summary. Use cautiously; this is irreversible.
+
 ---
 
 ## Installation
