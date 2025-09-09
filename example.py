@@ -339,9 +339,11 @@ def main():
             merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
             for res in merge_results:
                 if res['status'] == 'merged':
-                    print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
+                    pr_title = res.get('pr_title', 'Unknown Title')
+                    print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}")
                 elif res['status'] == 'merge_error':
-                    print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
+                    pr_title = res.get('pr_title', 'Unknown Title')
+                    print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}")
         
         print(f"\nAuto-merge complete.")
         return

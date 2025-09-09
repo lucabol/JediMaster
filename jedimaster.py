@@ -551,7 +551,7 @@ class JediMaster:
                         query_result = self._graphql_request(pr_query, query_vars)
                         if "errors" in query_result:
                             self.logger.error(f"GraphQL query errors: {query_result['errors']}")
-                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to get PR node ID: {query_result["errors"]}'})
+                            results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to get PR node ID: {query_result["errors"]}'})
                             continue
                             
                         pr_node_id = query_result["data"]["repository"]["pullRequest"]["id"]
@@ -566,7 +566,7 @@ class JediMaster:
                             
                             if "errors" in mutation_result:
                                 self.logger.error(f"GraphQL mutation errors: {mutation_result['errors']}")
-                                results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to mark as ready: {mutation_result["errors"]}'})
+                                results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to mark as ready: {mutation_result["errors"]}'})
                                 continue
                             
                             # Check the result
@@ -583,7 +583,7 @@ class JediMaster:
                             
                     except Exception as e:
                         self.logger.error(f"Failed to mark PR #{pr.number} as ready for review: {e}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': f'Failed to mark as ready for review: {e}'})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to mark as ready for review: {e}'})
                         continue
                 
                 # Check for mergeability (no conflicts)
@@ -613,18 +613,18 @@ class JediMaster:
                     except Exception as e:
                         self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Has merge conflicts'})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Has merge conflicts'})
                     continue
                 elif pr.mergeable is None:
                     self.logger.warning(f"PR #{pr.number} in {repo_name} has unknown mergeable state, skipping merge")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'Unknown merge state'})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Unknown merge state'})
                     continue
                 
                 # Final check to ensure PR is not a draft before merging
                 pr_draft_status = getattr(pr, 'draft', False)
                 if pr_draft_status:
                     self.logger.error(f"PR #{pr.number} is still in draft state after processing, skipping merge")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': 'PR still in draft state'})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'PR still in draft state'})
                     continue
                 
                 self.logger.info(f"Attempting to merge PR #{pr.number} in {repo_name} (approved={approved}, mergeable={pr.mergeable}, draft={pr_draft_status})")
@@ -647,7 +647,7 @@ class JediMaster:
                         except Exception as e:
                             self.logger.error(f"Failed to delete branch for PR #{pr.number}: {e}")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merged'})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merged'})
                     else:
                         self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name}: {merge_result.message}")
                         
@@ -675,7 +675,7 @@ class JediMaster:
                         except Exception as e:
                             self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': merge_result.message})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': merge_result.message})
                 except Exception as e:
                     self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name}: {e}")
                     
@@ -703,7 +703,7 @@ class JediMaster:
                     except Exception as assign_e:
                         self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'merge_error', 'error': str(e)})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': str(e)})
         except Exception as e:
             self.logger.error(f"Error merging reviewed PRs in {repo_name}: {e}")
             results.append({'repo': repo_name, 'pr_number': 0, 'status': 'merge_error', 'error': str(e)})
@@ -1223,9 +1223,11 @@ def main():
                 merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
                 for res in merge_results:
                     if res['status'] == 'merged':
-                        print(f"  - Merged PR #{res['pr_number']} in {repo_name}")
+                        pr_title = res.get('pr_title', 'Unknown Title')
+                        print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}")
                     elif res['status'] == 'merge_error':
-                        print(f"  - Failed to merge PR #{res['pr_number']} in {repo_name}: {res['error']}")
+                        pr_title = res.get('pr_title', 'Unknown Title')
+                        print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}")
 
         # Save and display results
         filename = jedimaster.save_report(report, args.output)
