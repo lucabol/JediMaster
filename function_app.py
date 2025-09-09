@@ -1,110 +1,153 @@
 import azure.functions as func
-import datetime
-import json
-import logging
+import logging, os, json, traceback
+from datetime import datetime
 
-from jedimaster import process_issues_api, process_user_api
+from jedimaster import JediMaster
+from creator import CreatorAgent
 
 app = func.FunctionApp()
 
-@app.route(route="ProcessRepos", auth_level=func.AuthLevel.ANONYMOUS)
-def ProcessRepos(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('ProcessRepos HTTP trigger function called.')
-    repo_names_param = req.params.get('repo_names')
-    input_data = {}
-    repo_names = None
-    if repo_names_param:
-        # Support comma-separated list in query string
-        repo_names = [r.strip() for r in repo_names_param.split(',') if r.strip()]
-        input_data['repo_names'] = repo_names
-    else:
-        try:
-            input_data = req.get_json()
-        except ValueError:
-            return func.HttpResponse(
-                json.dumps({"error": "Invalid JSON in request body or missing repo_names parameter"}),
-                status_code=400,
-                mimetype="application/json"
-            )
-        repo_names = input_data.get('repo_names')
-    if not repo_names or not isinstance(repo_names, list) or not repo_names:
-        return func.HttpResponse(
-            json.dumps({"error": "Missing repo_names in query string or request body (should be a non-empty list or comma-separated string)"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    result = process_issues_api(input_data)
-    return func.HttpResponse(
-        json.dumps(result),
-        status_code=200,
-        mimetype="application/json"
-    )
+# Environment variable controls (all optional except tokens):
+# GITHUB_TOKEN (required)
+# OPENAI_API_KEY (required for LLM issue creation / decision logic)
+# AUTOMATION_REPOS: comma-separated list owner/repo (required)
+# SCHEDULE_CRON: optional cron expression (default: every 6 hours)
+# CREATE_ISSUES: if '1' or 'true', create issues
+# CREATE_ISSUES_COUNT: number of issues per repo (default 3 when CREATE_ISSUES enabled)
+# PROCESS_PRS: if '1' or 'true', run PR review logic
+# AUTO_MERGE: if '1' or 'true', attempt auto merge of approved PRs
+# JUST_LABEL: if '1' or 'true', only label issues (do not assign)
+# USE_FILE_FILTER: if '1' use .coding_agent file instead of topic filter
 
-@app.route(route="ProcessUser", auth_level=func.AuthLevel.ANONYMOUS)
-def ProcessUser(req: func.HttpRequest) -> func.HttpResponse:
-    logging.info('ProcessUser HTTP trigger function called.')
-    username = req.params.get('username')
-    input_data = {}
-    if not username:
-        try:
-            input_data = req.get_json()
-        except ValueError:
-            return func.HttpResponse(
-                json.dumps({"error": "Invalid JSON in request body or missing username parameter"}),
-                status_code=400,
-                mimetype="application/json"
-            )
-        username = input_data.get('username')
-    else:
-        input_data['username'] = username
-    if not username:
-        return func.HttpResponse(
-            json.dumps({"error": "Missing username in query string or request body"}),
-            status_code=400,
-            mimetype="application/json"
-        )
-    result = process_user_api(input_data)
-    return func.HttpResponse(
-        json.dumps(result),
-        status_code=200,
-        mimetype="application/json"
-    )
+DEFAULT_CRON = "0 0 */6 * * *"  # every 6 hours
 
-@app.timer_trigger(schedule="0 0 1 * * *", arg_name="myTimer", run_on_startup=False,
-              use_monitor=False) 
-def TimerProcessUser(myTimer: func.TimerRequest) -> None:
-    
-    if myTimer.past_due:
-        logging.info('The timer is past due!')
+# We dynamically register the timer based on env so deployment does not require code change for schedule
+schedule_expr = os.getenv("SCHEDULE_CRON", DEFAULT_CRON)
 
-    logging.info('Python timer trigger function executed.')
+@app.timer_trigger(schedule=schedule_expr, arg_name="automationTimer", run_on_startup=False, use_monitor=False)
+def AutomateRepos(automationTimer: func.TimerRequest) -> None:
+    start_ts = datetime.utcnow().isoformat()
+    logging.info(f"[AutomateRepos] Invocation start {start_ts} schedule={schedule_expr}")
+    if automationTimer.past_due:
+        logging.warning("[AutomateRepos] Timer is past due")
 
-    import os
-    username = os.getenv('TIMER_USERNAME')
-    if not username:
-        logging.error('TIMER_USERNAME environment variable not set.')
+    github_token = os.getenv('GITHUB_TOKEN')
+    openai_api_key = os.getenv('OPENAI_API_KEY')
+    repos_env = os.getenv('AUTOMATION_REPOS')
+
+    if not github_token:
+        logging.error("[AutomateRepos] Missing GITHUB_TOKEN – aborting")
         return
-    input_data = {'username': username}
-    result = process_user_api(input_data)
-    logging.info(f'ProcessUser result: {result}')
-
-@app.timer_trigger(schedule="0 0 1 * * *", arg_name="myTimerRepos", run_on_startup=False, use_monitor=False)
-def TimerProcessRepos(myTimerRepos: func.TimerRequest) -> None:
-    if myTimerRepos.past_due:
-        logging.info('The timer is past due!')
-
-    logging.info('Python timer trigger function (repos) executed.')
-
-    import os
-    repos_env = os.getenv('TIMER_REPOS')
+    if not openai_api_key:
+        logging.error("[AutomateRepos] Missing OPENAI_API_KEY – aborting")
+        return
     if not repos_env:
-        logging.error('TIMER_REPOS environment variable not set.')
+        logging.error("[AutomateRepos] AUTOMATION_REPOS not set – aborting")
         return
-    # Support comma-separated list
+
     repo_names = [r.strip() for r in repos_env.split(',') if r.strip()]
     if not repo_names:
-        logging.error('TIMER_REPOS environment variable is empty or invalid.')
+        logging.error("[AutomateRepos] AUTOMATION_REPOS parsed empty – aborting")
         return
-    input_data = {'repo_names': repo_names}
-    result = process_issues_api(input_data)
-    logging.info(f'ProcessRepos result: {result}')
+
+    create_issues_flag = os.getenv('CREATE_ISSUES', '0').lower() in ('1', 'true', 'yes')
+    create_count_raw = os.getenv('CREATE_ISSUES_COUNT')
+    create_count = None
+    if create_issues_flag:
+        try:
+            create_count = int(create_count_raw) if create_count_raw else 3
+        except ValueError:
+            create_count = 3
+    process_prs_flag = os.getenv('PROCESS_PRS', '1').lower() in ('1', 'true', 'yes')
+    auto_merge_flag = os.getenv('AUTO_MERGE', '1').lower() in ('1', 'true', 'yes')
+    just_label_flag = os.getenv('JUST_LABEL', '1').lower() in ('1', 'true', 'yes')
+    use_file_filter = os.getenv('USE_FILE_FILTER', '0').lower() in ('1', 'true', 'yes')
+
+    logging.info(
+        "[AutomateRepos] Config: repos=%s create_issues=%s count=%s process_prs=%s auto_merge=%s just_label=%s use_file_filter=%s",
+        repo_names, create_issues_flag, create_count, process_prs_flag, auto_merge_flag, just_label_flag, use_file_filter
+    )
+
+    summary = {
+        'start': start_ts,
+        'repos_processed': 0,
+        'issue_reports': [],  # per repo issue stats
+        'issue_creation': [],  # per repo created issues
+        'pr_merge': [],        # per repo merge results
+        'errors': []
+    }
+
+    # Instantiate core orchestrator once; we'll reuse for all repos. We will toggle PR mode per path.
+    jedi = JediMaster(
+        github_token,
+        openai_api_key,
+        just_label=just_label_flag,
+        use_topic_filter=not use_file_filter,
+        process_prs=False,  # we'll call PR / merge flows explicitly
+        auto_merge_reviewed=False
+    )
+
+    for repo_full in repo_names:
+        logging.info(f"[AutomateRepos] Processing repository {repo_full}")
+        repo_block = {'repo': repo_full}
+        try:
+            # 1. Optional issue creation
+            if create_issues_flag:
+                try:
+                    creator = CreatorAgent(github_token, openai_api_key, repo_full)
+                    created = creator.create_issues(max_issues=create_count or 3)
+                    repo_block['created_issues'] = created
+                    summary['issue_creation'].append({'repo': repo_full, 'created': created})
+                    logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full}")
+                except Exception as e:
+                    logging.error(f"[AutomateRepos] Issue creation failed for {repo_full}: {e}")
+                    summary['errors'].append({'repo': repo_full, 'stage': 'create_issues', 'error': str(e)})
+            # 2. Issue labeling / assigning (non-PR run)
+            try:
+                report = jedi.process_repositories([repo_full])
+                repo_block['issue_report'] = {
+                    'total': report.total_issues,
+                    'assigned': report.assigned,
+                    'labeled': report.labeled,
+                    'not_assigned': report.not_assigned,
+                    'already_assigned': report.already_assigned,
+                    'errors': report.errors
+                }
+                summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
+                logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
+            except Exception as e:
+                logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
+                summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
+            # 3. PR review & optional auto merge
+            if process_prs_flag:
+                try:
+                    pr_results = jedi.process_pull_requests(repo_full)
+                    repo_block['pr_reviews'] = pr_results
+                    logging.info(f"[AutomateRepos] PR review results count={len(pr_results)} repo={repo_full}")
+                except Exception as e:
+                    logging.error(f"[AutomateRepos] PR review failed for {repo_full}: {e}")
+                    summary['errors'].append({'repo': repo_full, 'stage': 'pr_review', 'error': str(e)})
+                if auto_merge_flag:
+                    try:
+                        merge_results = jedi.merge_reviewed_pull_requests(repo_full)
+                        repo_block['merge'] = merge_results
+                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_results})
+                        logging.info(f"[AutomateRepos] Merge attempt results count={len(merge_results)} repo={repo_full}")
+                    except Exception as e:
+                        logging.error(f"[AutomateRepos] Auto-merge failed for {repo_full}: {e}")
+                        summary['errors'].append({'repo': repo_full, 'stage': 'auto_merge', 'error': str(e)})
+            summary['repos_processed'] += 1
+        except Exception as e:
+            logging.error(f"[AutomateRepos] Unexpected failure for {repo_full}: {e}\n{traceback.format_exc()}")
+            summary['errors'].append({'repo': repo_full, 'stage': 'generic', 'error': str(e)})
+        # Optionally log per repo block debug
+        logging.debug(f"[AutomateRepos] Repo block detail: {json.dumps(repo_block)[:800]}")
+
+    end_ts = datetime.utcnow().isoformat()
+    summary['end'] = end_ts
+    logging.info(f"[AutomateRepos] Completed run. Repos={summary['repos_processed']} errors={len(summary['errors'])}")
+    # Compact summary log
+    try:
+        logging.info("[AutomateRepos] Summary JSON: %s", json.dumps(summary)[:4000])
+    except Exception:
+        pass
