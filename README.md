@@ -13,6 +13,7 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 - **Automated PR Review**: Reviews open pull requests using AI (PRDeciderAgent) and can comment or mark PRs as ready to merge.
 - **Multi-Repo & User Support**: Process issues and PRs for multiple repositories or all repos for a user.
 - **Flexible Deployment**: Run as a standalone Python script or as Azure Functions (HTTP & Timer triggers).
+- **Library API & Helper Script**: Import and orchestrate directly in Python or use `example.py` for advanced scenarios (auto-merge, repo reset, seeding demo issues, CreatorAgent flows).
 - **Comprehensive Reporting**: Generates detailed JSON reports.
 - **Robust Error Handling**: Handles API, network, and data errors gracefully.
 
@@ -39,11 +40,13 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 
    Optional environment variables:
    - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
+   - `JUST_LABEL` (Functions Timer mode): Alternative flag used in Azure Function automation (`JUST_LABEL=1` means only labeling). Takes precedence over `ISSUE_ACTION` inside the automation Function.
    - `TIMER_USERNAME` (optional): Used by timer-triggered Azure Functions to specify the GitHub username whose repositories should be processed on schedule.
      - Example: `TIMER_USERNAME=github-username`
      - Only needed for timer-based automation; not required for manual/scripted runs.
    - `TIMER_REPOS` (optional): Comma-separated list of repositories for timer-triggered Azure Functions
      - Example: `TIMER_REPOS=owner/repo1,owner/repo2`
+   - Automation-specific (see Azure Functions section): `AUTOMATION_REPOS`, `CREATE_ISSUES`, `CREATE_ISSUES_COUNT`, `PROCESS_PRS`, `AUTO_MERGE`, `USE_FILE_FILTER`, `SCHEDULE_CRON`.
 
    You can use a `.env` file or set them in your shell:
    ```bash
@@ -115,6 +118,74 @@ This option uses LLM to suggest and open new issues in the specified repositorie
 
 ---
 
+### 1b. Using the Library Programmatically
+
+You can import and drive `JediMaster` directly:
+
+```python
+from jedimaster import JediMaster
+
+jm = JediMaster(
+  github_token="<token>",
+  openai_api_key="<openai>",
+  just_label=True,             # only label instead of assign
+  use_topic_filter=True,       # or False to use .coding_agent file
+  process_prs=False,
+  auto_merge_reviewed=False,
+)
+
+report = jm.process_repositories(["owner/repo1", "owner/repo2"])
+jm.print_summary(report)
+jm.save_report(report)
+```
+
+---
+
+### 1c. `example.py` Helper Script
+
+The `example.py` script showcases extended workflows and test/demo utilities.
+
+Key additional flags beyond `jedimaster.py`:
+
+| Flag | Purpose |
+|------|---------|
+| `--assign` | Force assignment (overrides `--just-label`) |
+| `--populate-issues` | Seed a demo repo with curated suitable/unsuitable issues |
+| `--reset-repo` | Aggressively reset a demo repo: close issues/PRs, delete branches, restore baseline files |
+| `--create-issues` | Invoke `CreatorAgent` to suggest & open issues |
+| `--auto-merge-reviewed` | Only perform reviewed PR auto-merge pass |
+
+Examples:
+
+Populate a demo repo with synthetic issues:
+```bash
+python example.py --populate-issues lucabol/Hello-World
+```
+
+Reset the demo repo baseline:
+```bash
+python example.py --reset-repo lucabol/Hello-World
+```
+
+Run normal labeling (topic filter) on seeded repo:
+```bash
+python example.py lucabol/Hello-World --verbose
+```
+
+Auto-merge approved PRs only (skip issue processing):
+```bash
+python example.py --auto-merge-reviewed lucabol/Hello-World
+```
+
+Generate new issues via CreatorAgent:
+```bash
+python example.py --create-issues lucabol/Hello-World
+```
+
+NOTE: Some helper actions (reset/delete) assume you control the target repo and can modify branches & files.
+
+---
+
 ### 2. As Azure Functions
 
 #### HTTP Triggers
@@ -156,6 +227,76 @@ TIMER_REPOS=owner/repo1,owner/repo2
 ```powershell
 $body = @{ username = "your-github-username" } | ConvertTo-Json
 Invoke-RestMethod -Uri "http://localhost:7071/api/ProcessUser" -Method Post -Body $body -ContentType "application/json"
+```
+
+---
+
+#### 2a. Automated Orchestration Function (`function_app.py` root)
+
+The repository also includes a timer-driven automation Function (`AutomateRepos`) that performs a full cycle (optional issue creation, labeling/assignment, PR review, auto-merge) across a static list of repositories.
+
+Configure via environment variables (e.g. in Azure portal or `local.settings.json` for local test):
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `AUTOMATION_REPOS` | Comma-separated `owner/repo` list to process | (required) |
+| `CREATE_ISSUES` | `1`/`true` to enable `CreatorAgent` | `0` |
+| `CREATE_ISSUES_COUNT` | Issues per repo when creation enabled | `3` |
+| `PROCESS_PRS` | Enable PR review agent | `1` |
+| `AUTO_MERGE` | Attempt merge of approved PRs | `1` |
+| `JUST_LABEL` | Only label, do not assign | `1` (label-only) |
+| `USE_FILE_FILTER` | Use `.coding_agent` file instead of topic | `0` |
+| `SCHEDULE_CRON` | NCRONTAB expression for timer | every 6h |
+
+Invocation log summary JSON is emitted at end of each run (Application Insights recommended).
+
+---
+
+#### 2b. Deployment Guidance (Azure)
+
+Recommendations (Python Azure Functions best practices):
+
+- Use Python Functions v2 programming model (this project uses `func.FunctionApp()` style) and host version v4.
+- Deploy to Linux plan (Flex Consumption (FC1) preferred; fallback to Elastic Premium if needed).
+- Keep secrets in Azure Function App settings or Key Vault references (avoid committing `.env`).
+- Enable Application Insights for monitoring.
+- Secure HTTP endpoints (default level `function`; add an API key or front door / APIM if exposed externally).
+- For scheduled automation, adjust `SCHEDULE_CRON` without code changes.
+
+Basic deployment steps (one-off manual path):
+
+```bash
+# Log in
+az login
+
+# (Optional) create resource group
+az group create -n rg-jedimaster -l westus2
+
+# Create a storage account (required for Functions)
+az storage account create -g rg-jedimaster -n <uniqueStorageName> -l westus2 --sku Standard_LRS
+
+# Create a Linux Flex Consumption Function App (preview naming may vary)
+az functionapp plan create -g rg-jedimaster -n plan-jedimaster --flex-consumption --location westus2
+az functionapp create -g rg-jedimaster -n jedimaster-func \
+  --storage-account <uniqueStorageName> \
+  --plan plan-jedimaster \
+  --runtime python \
+  --functions-version 4
+
+# Configure required settings
+az functionapp config appsettings set -g rg-jedimaster -n jedimaster-func --settings \
+  GITHUB_TOKEN=*** OPENAI_API_KEY=*** AUT0MATION_REPOS=owner/repo1,owner/repo2 JUST_LABEL=1 PROCESS_PRS=1 AUTO_MERGE=1
+
+# Deploy source (from repo root)
+func azure functionapp publish jedimaster-func
+```
+
+For infrastructure-as-code, consider Azure Developer CLI (azd) with a Bicep template referencing a Flex Consumption plan + Application Insights + Storage.
+
+Local test of automation timer (simulate run):
+```bash
+set AUT0MATION_REPOS=owner/repo1
+func start
 ```
 
 ---
