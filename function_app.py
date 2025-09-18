@@ -15,7 +15,7 @@ app = func.FunctionApp()
 # SCHEDULE_CRON: optional cron expression (default: every 6 hours)
 # CREATE_ISSUES: if '1' or 'true', create issues
 # CREATE_ISSUES_COUNT: number of issues per repo (default 3 when CREATE_ISSUES enabled)
-# SIMILARITY_THRESHOLD: similarity threshold for duplicate detection (default 0.9)
+# SIMILARITY_THRESHOLD: similarity threshold for duplicate detection (if set, uses OpenAI embeddings; if not set, uses local word-based detection)
 # PROCESS_PRS: if '1' or 'true', run PR review logic
 # AUTO_MERGE: if '1' or 'true', attempt auto merge of approved PRs
 # JUST_LABEL: if '1' or 'true', only label issues (do not assign)
@@ -63,16 +63,17 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     
     # Parse similarity threshold
     similarity_threshold_raw = os.getenv('SIMILARITY_THRESHOLD')
-    similarity_threshold = 0.9  # default
+    use_openai_similarity = similarity_threshold_raw is not None
+    similarity_threshold = 0.9 if use_openai_similarity else 0.5  # different defaults
     if similarity_threshold_raw:
         try:
             similarity_threshold = float(similarity_threshold_raw)
             if not (0.0 <= similarity_threshold <= 1.0):
-                logging.warning(f"[AutomateRepos] Invalid SIMILARITY_THRESHOLD {similarity_threshold}, using default 0.9")
-                similarity_threshold = 0.9
+                logging.warning(f"[AutomateRepos] Invalid SIMILARITY_THRESHOLD {similarity_threshold}, using default {0.9 if use_openai_similarity else 0.5}")
+                similarity_threshold = 0.9 if use_openai_similarity else 0.5
         except ValueError:
-            logging.warning(f"[AutomateRepos] Invalid SIMILARITY_THRESHOLD format {similarity_threshold_raw}, using default 0.9")
-            similarity_threshold = 0.9
+            logging.warning(f"[AutomateRepos] Invalid SIMILARITY_THRESHOLD format {similarity_threshold_raw}, using default {0.9 if use_openai_similarity else 0.5}")
+            similarity_threshold = 0.9 if use_openai_similarity else 0.5
     
     process_prs_flag = os.getenv('PROCESS_PRS', '1').lower() in ('1', 'true', 'yes')
     auto_merge_flag = os.getenv('AUTO_MERGE', '1').lower() in ('1', 'true', 'yes')
@@ -80,8 +81,8 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     use_file_filter = os.getenv('USE_FILE_FILTER', '0').lower() in ('1', 'true', 'yes')
 
     logging.info(
-        "[AutomateRepos] Config: repos=%s create_issues=%s count=%s similarity_threshold=%s process_prs=%s auto_merge=%s just_label=%s use_file_filter=%s",
-        repo_names, create_issues_flag, create_count, similarity_threshold, process_prs_flag, auto_merge_flag, just_label_flag, use_file_filter
+        "[AutomateRepos] Config: repos=%s create_issues=%s count=%s similarity_mode=%s threshold=%s process_prs=%s auto_merge=%s just_label=%s use_file_filter=%s",
+        repo_names, create_issues_flag, create_count, "openai" if use_openai_similarity else "local", similarity_threshold, process_prs_flag, auto_merge_flag, just_label_flag, use_file_filter
     )
 
     summary = {
@@ -110,7 +111,7 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             # 1. Optional issue creation
             if create_issues_flag:
                 try:
-                    creator = CreatorAgent(github_token, openai_api_key, repo_full, similarity_threshold=similarity_threshold)
+                    creator = CreatorAgent(github_token, openai_api_key, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
                     created = creator.create_issues(max_issues=create_count or 3)
                     repo_block['created_issues'] = created
                     summary['issue_creation'].append({'repo': repo_full, 'created': created})

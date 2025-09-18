@@ -6,18 +6,20 @@ import os
 import logging
 import json
 import numpy as np
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Optional, Set
 from openai import OpenAI
 from github import Github
 
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
-    def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = "gpt-3.5-turbo", similarity_threshold: float = 0.9):
+    def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = "gpt-3.5-turbo", similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
         self.github_token = github_token
         self.openai_api_key = openai_api_key
         self.repo_full_name = repo_full_name
         self.model = model
         self.similarity_threshold = similarity_threshold
+        self.use_openai_similarity = use_openai_similarity
         self.client = OpenAI(api_key=openai_api_key)
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
@@ -111,6 +113,45 @@ class CreatorAgent:
             self.logger.error(f"Failed to fetch existing issues: {e}")
             return []
 
+    def _normalize_title(self, title: str) -> Set[str]:
+        """Normalize title to a set of meaningful words for local similarity comparison."""
+        # Convert to lowercase and remove punctuation
+        normalized = re.sub(r'[^\w\s]', ' ', title.lower())
+        
+        # Split into words and filter out stop words and short words
+        stop_words = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+            'from', 'up', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
+            'between', 'among', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+            'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+            'fix', 'add', 'update', 'improve', 'enhance', 'implement', 'create', 'remove', 'delete',
+            'issue', 'bug', 'feature', 'support', 'help', 'need', 'make', 'change', 'modify'
+        }
+        
+        words = set()
+        for word in normalized.split():
+            # Keep words that are 3+ characters and not stop words
+            if len(word) >= 3 and word not in stop_words:
+                words.add(word)
+        
+        return words
+
+    def _calculate_local_similarity(self, title1: str, title2: str) -> float:
+        """Calculate local similarity using Jaccard similarity of normalized word sets."""
+        words1 = self._normalize_title(title1)
+        words2 = self._normalize_title(title2)
+        
+        if not words1 and not words2:
+            return 1.0  # Both empty
+        if not words1 or not words2:
+            return 0.0  # One empty
+        
+        # Jaccard similarity: intersection over union
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        return intersection / union if union > 0 else 0.0
+
     def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for a list of texts using OpenAI's text-embedding-ada-002 model."""
         try:
@@ -152,41 +193,87 @@ class CreatorAgent:
         if not existing_issues or not suggested_issues:
             return suggested_issues, []
 
-        # Get titles for embedding
-        suggested_titles = [issue['title'] for issue in suggested_issues]
-        existing_titles = [issue['title'] for issue in existing_issues]
-        
-        # Get embeddings for all titles
-        all_titles = suggested_titles + existing_titles
-        embeddings = self._get_embeddings(all_titles)
-        
-        if not embeddings or len(embeddings) != len(all_titles):
-            self.logger.warning("Failed to get embeddings, skipping similarity check")
-            return suggested_issues, []
-        
-        # Split embeddings back
-        suggested_embeddings = embeddings[:len(suggested_titles)]
-        existing_embeddings = embeddings[len(suggested_titles):]
-        
         unique_issues = []
         similar_issues_info = []
         
-        for i, suggested_issue in enumerate(suggested_issues):
-            suggested_embedding = suggested_embeddings[i]
+        if self.use_openai_similarity:
+            # Use OpenAI embeddings for semantic similarity (slower but more accurate)
+            self.logger.info("Using OpenAI embeddings for similarity detection")
+            suggested_titles = [issue['title'] for issue in suggested_issues]
+            existing_titles = [issue['title'] for issue in existing_issues]
+            
+            # Get embeddings for all titles
+            all_titles = suggested_titles + existing_titles
+            embeddings = self._get_embeddings(all_titles)
+            
+            if not embeddings or len(embeddings) != len(all_titles):
+                self.logger.warning("Failed to get embeddings, falling back to local similarity")
+                return self._check_for_similar_issues_local(suggested_issues, existing_issues)
+            
+            # Split embeddings back
+            suggested_embeddings = embeddings[:len(suggested_titles)]
+            existing_embeddings = embeddings[len(suggested_titles):]
+            
+            for i, suggested_issue in enumerate(suggested_issues):
+                suggested_embedding = suggested_embeddings[i]
+                is_similar = False
+                most_similar_issue = None
+                highest_similarity = 0.0
+                
+                # Check against all existing issues
+                for j, existing_issue in enumerate(existing_issues):
+                    existing_embedding = existing_embeddings[j]
+                    similarity = self._calculate_similarity(suggested_embedding, existing_embedding)
+                    
+                    if similarity > highest_similarity:
+                        highest_similarity = similarity
+                        most_similar_issue = existing_issue
+                    
+                    if similarity >= self.similarity_threshold:
+                        is_similar = True
+                        break
+                
+                if is_similar and most_similar_issue:
+                    similar_issues_info.append({
+                        'suggested_title': suggested_issue['title'],
+                        'existing_title': most_similar_issue['title'],
+                        'existing_number': most_similar_issue['number'],
+                        'existing_state': most_similar_issue['state'],
+                        'existing_url': most_similar_issue['url'],
+                        'similarity_score': highest_similarity
+                    })
+                    self.logger.info(f"Skipping similar issue: '{suggested_issue['title']}' (similarity: {highest_similarity:.3f} with #{most_similar_issue['number']})")
+                else:
+                    unique_issues.append(suggested_issue)
+        else:
+            # Use local similarity (faster)
+            self.logger.info("Using local word-based similarity detection")
+            unique_issues, similar_issues_info = self._check_for_similar_issues_local(suggested_issues, existing_issues)
+        
+        return unique_issues, similar_issues_info
+
+    def _check_for_similar_issues_local(self, suggested_issues: List[Dict[str, str]], existing_issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+        """Local similarity check using word overlap."""
+        unique_issues = []
+        similar_issues_info = []
+        
+        # Use 0.5 as threshold for local similarity (word overlap is different from semantic similarity)
+        local_threshold = 0.5
+        
+        for suggested_issue in suggested_issues:
             is_similar = False
             most_similar_issue = None
             highest_similarity = 0.0
             
             # Check against all existing issues
-            for j, existing_issue in enumerate(existing_issues):
-                existing_embedding = existing_embeddings[j]
-                similarity = self._calculate_similarity(suggested_embedding, existing_embedding)
+            for existing_issue in existing_issues:
+                similarity = self._calculate_local_similarity(suggested_issue['title'], existing_issue['title'])
                 
                 if similarity > highest_similarity:
                     highest_similarity = similarity
                     most_similar_issue = existing_issue
                 
-                if similarity >= self.similarity_threshold:
+                if similarity >= local_threshold:
                     is_similar = True
                     break
             
@@ -199,7 +286,7 @@ class CreatorAgent:
                     'existing_url': most_similar_issue['url'],
                     'similarity_score': highest_similarity
                 })
-                self.logger.info(f"Skipping similar issue: '{suggested_issue['title']}' (similarity: {highest_similarity:.3f} with #{most_similar_issue['number']})")
+                self.logger.info(f"Skipping similar issue: '{suggested_issue['title']}' (local similarity: {highest_similarity:.3f} with #{most_similar_issue['number']})")
             else:
                 unique_issues.append(suggested_issue)
         

@@ -1134,8 +1134,8 @@ def main():
 
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
-    parser.add_argument('--similarity-threshold', type=float, default=0.9, metavar='THRESHOLD',
-                       help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9)')
+    parser.add_argument('--similarity-threshold', type=float, metavar='THRESHOLD',
+                       help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9 with OpenAI embeddings, 0.5 with local similarity)')
 
     args = parser.parse_args()
 
@@ -1143,8 +1143,12 @@ def main():
     if not args.user and not args.repositories:
         parser.error("Either specify repositories or use --user option")
 
+    # Determine similarity mode and threshold
+    use_openai_similarity = args.similarity_threshold is not None
+    similarity_threshold = args.similarity_threshold if args.similarity_threshold is not None else 0.9
+    
     # Validate similarity threshold
-    if not (0.0 <= args.similarity_threshold <= 1.0):
+    if not (0.0 <= similarity_threshold <= 1.0):
         parser.error("Similarity threshold must be between 0.0 and 1.0")
 
     # Load environment variables from .env file (if it exists)
@@ -1182,8 +1186,11 @@ def main():
                 return 1
             for repo_full_name in args.repositories:
                 print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-                print(f"Using similarity threshold: {args.similarity_threshold}")
-                creator = CreatorAgent(github_token, openai_api_key, repo_full_name, similarity_threshold=args.similarity_threshold)
+                if use_openai_similarity:
+                    print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
+                else:
+                    print(f"Using local word-based similarity detection (threshold: 0.5)")
+                creator = CreatorAgent(github_token, openai_api_key, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
                 results = creator.create_issues()
                 if not results:
                     print("No issues suggested by LLM.")
