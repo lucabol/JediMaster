@@ -7,6 +7,7 @@ import logging
 import os
 from typing import Dict, Any
 from openai import OpenAI
+from openai_utils import create_openai_client
 
 
 class DeciderAgent:
@@ -17,16 +18,9 @@ class DeciderAgent:
         # ...existing code...
         # Load configuration from environment variables
         self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
-        base_url = os.getenv('OPENAI_BASE_URL')
         
-        # Configure OpenAI client - always provide base_url
-        client_kwargs = {"api_key": openai_api_key}
-        if base_url and base_url.strip():
-            client_kwargs["base_url"] = base_url
-        else:
-            client_kwargs["base_url"] = "https://api.openai.com/v1"
-            
-        self.client = OpenAI(**client_kwargs)
+        # Create OpenAI client with proper Azure/OpenAI configuration
+        self.client = create_openai_client(openai_api_key, self.model)
         self.logger = logging.getLogger('jedimaster.decider')
         # ...existing code...
         self.system_prompt = """You are an expert AI assistant tasked with evaluating GitHub issues to determine if they are suitable for GitHub Copilot assistance. GitHub Copilot excels at:
@@ -149,17 +143,11 @@ class PRDeciderAgent:
 
     def __init__(self, openai_api_key: str, model: str = None):
         # Load configuration from environment variables
+        # Load configuration from environment variables
         self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
-        base_url = os.getenv('OPENAI_BASE_URL')
         
-        # Configure OpenAI client - always provide base_url
-        client_kwargs = {"api_key": openai_api_key}
-        if base_url and base_url.strip():
-            client_kwargs["base_url"] = base_url
-        else:
-            client_kwargs["base_url"] = "https://api.openai.com/v1"
-            
-        self.client = OpenAI(**client_kwargs)
+        # Create OpenAI client with proper Azure/OpenAI configuration
+        self.client = create_openai_client(openai_api_key, self.model)
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
     "You are an expert AI assistant tasked with reviewing GitHub pull requests. "

@@ -11,6 +11,42 @@ from typing import List, Dict, Any, Optional, Set
 from openai import OpenAI
 from github import Github
 
+
+def create_openai_client(api_key: str, model: str) -> OpenAI:
+    """
+    Create an OpenAI client configured for either Azure OpenAI or standard OpenAI.
+    
+    Args:
+        api_key: The OpenAI API key
+        model: The model name (used for Azure OpenAI deployment path)
+    
+    Returns:
+        Configured OpenAI client
+    """
+    base_url = os.getenv('OPENAI_BASE_URL')
+    client_kwargs = {"api_key": api_key}
+    
+    if base_url and base_url.strip():
+        # Azure OpenAI configuration
+        client_kwargs["base_url"] = f"{base_url}/openai/deployments/{model}"
+        client_kwargs["default_query"] = {"api-version": "2024-02-15-preview"}
+    else:
+        # Standard OpenAI configuration
+        client_kwargs["base_url"] = "https://api.openai.com/v1"
+    
+    return OpenAI(**client_kwargs)
+
+import os
+import logging
+import json
+import numpy as np
+import re
+from typing import List, Dict, Any, Optional, Set
+from openai import OpenAI
+from github import Github
+from openai_utils import create_openai_client
+
+
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
     def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
@@ -22,15 +58,8 @@ class CreatorAgent:
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
         
-        # Configure OpenAI client - always provide base_url
-        base_url = os.getenv('OPENAI_BASE_URL')
-        client_kwargs = {"api_key": openai_api_key}
-        if base_url and base_url.strip():
-            client_kwargs["base_url"] = base_url
-        else:
-            client_kwargs["base_url"] = "https://api.openai.com/v1"
-        
-        self.client = OpenAI(**client_kwargs)
+        # Create OpenAI client with proper Azure/OpenAI configuration
+        self.client = create_openai_client(openai_api_key, self.model)
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
