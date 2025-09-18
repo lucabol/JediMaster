@@ -83,18 +83,15 @@ class CreatorAgent:
         return context[:max_chars]
 
     def _get_existing_issues(self) -> List[Dict[str, Any]]:
-        """Fetch all existing issues (open and closed) from the repository."""
+        """Fetch existing open issues from the repository."""
         try:
             repo = self.github.get_repo(self.repo_full_name)
             
-            # Get both open and closed issues
+            # Get only open issues
             open_issues = list(repo.get_issues(state='open'))
-            closed_issues = list(repo.get_issues(state='closed'))
-            
-            all_issues = open_issues + closed_issues
             
             existing_issues = []
-            for issue in all_issues:
+            for issue in open_issues:
                 # Skip pull requests (they also show up in issues)
                 if issue.pull_request:
                     continue
@@ -106,7 +103,7 @@ class CreatorAgent:
                     'url': issue.html_url
                 })
             
-            self.logger.info(f"Found {len(existing_issues)} existing issues in {self.repo_full_name}")
+            self.logger.info(f"Found {len(existing_issues)} open issues in {self.repo_full_name}")
             return existing_issues
             
         except Exception as e:
@@ -198,7 +195,7 @@ class CreatorAgent:
         
         if self.use_openai_similarity:
             # Use OpenAI embeddings for semantic similarity (slower but more accurate)
-            self.logger.info("Using OpenAI embeddings for similarity detection")
+            self.logger.info(f"Using OpenAI embeddings for similarity detection against {len(existing_issues)} open issues")
             suggested_titles = [issue['title'] for issue in suggested_issues]
             existing_titles = [issue['title'] for issue in existing_issues]
             
@@ -247,7 +244,7 @@ class CreatorAgent:
                     unique_issues.append(suggested_issue)
         else:
             # Use local similarity (faster)
-            self.logger.info("Using local word-based similarity detection")
+            self.logger.info(f"Using local word-based similarity detection against {len(existing_issues)} open issues")
             unique_issues, similar_issues_info = self._check_for_similar_issues_local(suggested_issues, existing_issues)
         
         return unique_issues, similar_issues_info
@@ -259,6 +256,7 @@ class CreatorAgent:
         
         # Use 0.5 as threshold for local similarity (word overlap is different from semantic similarity)
         local_threshold = 0.5
+        self.logger.debug(f"Comparing {len(suggested_issues)} suggestions against {len(existing_issues)} open issues with local threshold {local_threshold}")
         
         for suggested_issue in suggested_issues:
             is_similar = False
@@ -389,6 +387,9 @@ class CreatorAgent:
         
         # Check for similar issues
         unique_issues, similar_issues_info = self._check_for_similar_issues(suggested_issues, existing_issues)
+        
+        # Print comparison information
+        print(f"Checked {len(suggested_issues)} suggested issues against {len(existing_issues)} existing open issues")
         
         # Print similarity information
         if similar_issues_info:
