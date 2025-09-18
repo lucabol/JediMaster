@@ -1134,12 +1134,18 @@ def main():
 
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+    parser.add_argument('--similarity-threshold', type=float, default=0.9, metavar='THRESHOLD',
+                       help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9)')
 
     args = parser.parse_args()
 
     # Validate arguments
     if not args.user and not args.repositories:
         parser.error("Either specify repositories or use --user option")
+
+    # Validate similarity threshold
+    if not (0.0 <= args.similarity_threshold <= 1.0):
+        parser.error("Similarity threshold must be between 0.0 and 1.0")
 
     # Load environment variables from .env file (if it exists)
     load_dotenv()
@@ -1176,18 +1182,9 @@ def main():
                 return 1
             for repo_full_name in args.repositories:
                 print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-                creator = CreatorAgent(github_token, openai_api_key, repo_full_name)
+                print(f"Using similarity threshold: {args.similarity_threshold}")
+                creator = CreatorAgent(github_token, openai_api_key, repo_full_name, similarity_threshold=args.similarity_threshold)
                 results = creator.create_issues()
-                # Always print the LLM conversation, even if error or invalid JSON, before any error/empty result message
-                conv = getattr(creator, 'last_conversation', None)
-                print("\n--- LLM Conversation ---")
-                if conv:
-                    print("[System Prompt]:\n" + conv.get("system", ""))
-                    print("\n[User Prompt]:\n" + conv.get("user", ""))
-                    print("\n[LLM Response]:\n" + str(conv.get("llm_response", "")))
-                else:
-                    print("[No conversation captured]")
-                print("--- End Conversation ---\n")
                 if not results:
                     print("No issues suggested by LLM.")
                 for res in results:
