@@ -55,6 +55,13 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
    - `OPENAI_API_KEY`: Your OpenAI API key
 
+   Optional OpenAI configuration:
+   - `OPENAI_MODEL`: OpenAI model to use (default: `gpt-3.5-turbo`)
+     - Examples: `gpt-3.5-turbo`, `gpt-4`, `gpt-4-turbo`
+   - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (leave empty for default OpenAI API)
+     - For Azure OpenAI: `https://your-resource.openai.azure.com/`
+     - For other OpenAI-compatible endpoints: `https://your-custom-endpoint.com/v1`
+
    Optional environment variables:
    - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
    - `JUST_LABEL` (Functions Timer mode): Alternative flag used in Azure Function automation (`JUST_LABEL=1` means only labeling). Takes precedence over `ISSUE_ACTION` inside the automation Function.
@@ -70,6 +77,8 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    # .env file (recommended for development)
    GITHUB_TOKEN=your_github_token
    OPENAI_API_KEY=your_openai_api_key
+   OPENAI_MODEL=gpt-4  # Optional: defaults to gpt-3.5-turbo
+   OPENAI_BASE_URL=    # Optional: leave empty for default OpenAI API
 
    ISSUE_ACTION=assign   # or label (default: label)
    TIMER_USERNAME=github-username
@@ -78,6 +87,7 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    # Or set in your shell
    export GITHUB_TOKEN=your_github_token
    export OPENAI_API_KEY=your_openai_api_key
+   export OPENAI_MODEL=gpt-4
    ```
 
 ---

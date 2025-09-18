@@ -4,6 +4,7 @@ DeciderAgent - Uses LLM to evaluate GitHub issues for GitHub Copilot suitability
 
 import json
 import logging
+import os
 from typing import Dict, Any
 from openai import OpenAI
 
@@ -12,10 +13,20 @@ class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
     # ...existing code...
 
-    def __init__(self, openai_api_key: str, model: str = "gpt-3.5-turbo"):
+    def __init__(self, openai_api_key: str, model: str = None):
         # ...existing code...
-        self.client = OpenAI(api_key=openai_api_key)
-        self.model = model
+        # Load configuration from environment variables
+        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        base_url = os.getenv('OPENAI_BASE_URL')
+        
+        # Configure OpenAI client - always provide base_url
+        client_kwargs = {"api_key": openai_api_key}
+        if base_url and base_url.strip():
+            client_kwargs["base_url"] = base_url
+        else:
+            client_kwargs["base_url"] = "https://api.openai.com/v1"
+            
+        self.client = OpenAI(**client_kwargs)
         self.logger = logging.getLogger('jedimaster.decider')
         # ...existing code...
         self.system_prompt = """You are an expert AI assistant tasked with evaluating GitHub issues to determine if they are suitable for GitHub Copilot assistance. GitHub Copilot excels at:
@@ -136,9 +147,19 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 class PRDeciderAgent:
     """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
 
-    def __init__(self, openai_api_key: str, model: str = "gpt-3.5-turbo"):
-        self.client = OpenAI(api_key=openai_api_key)
-        self.model = model
+    def __init__(self, openai_api_key: str, model: str = None):
+        # Load configuration from environment variables
+        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        base_url = os.getenv('OPENAI_BASE_URL')
+        
+        # Configure OpenAI client - always provide base_url
+        client_kwargs = {"api_key": openai_api_key}
+        if base_url and base_url.strip():
+            client_kwargs["base_url"] = base_url
+        else:
+            client_kwargs["base_url"] = "https://api.openai.com/v1"
+            
+        self.client = OpenAI(**client_kwargs)
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
     "You are an expert AI assistant tasked with reviewing GitHub pull requests. "

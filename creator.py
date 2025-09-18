@@ -13,14 +13,24 @@ from github import Github
 
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
-    def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = "gpt-3.5-turbo", similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
+    def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
         self.github_token = github_token
         self.openai_api_key = openai_api_key
         self.repo_full_name = repo_full_name
-        self.model = model
+        # Load configuration from environment variables
+        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
-        self.client = OpenAI(api_key=openai_api_key)
+        
+        # Configure OpenAI client - always provide base_url
+        base_url = os.getenv('OPENAI_BASE_URL')
+        client_kwargs = {"api_key": openai_api_key}
+        if base_url and base_url.strip():
+            client_kwargs["base_url"] = base_url
+        else:
+            client_kwargs["base_url"] = "https://api.openai.com/v1"
+        
+        self.client = OpenAI(**client_kwargs)
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
