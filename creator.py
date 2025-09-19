@@ -8,58 +8,26 @@ import json
 import numpy as np
 import re
 from typing import List, Dict, Any, Optional, Set
-from openai import OpenAI
 from github import Github
-
-
-def create_openai_client(api_key: str, model: str) -> OpenAI:
-    """
-    Create an OpenAI client configured for either Azure OpenAI or standard OpenAI.
-    
-    Args:
-        api_key: The OpenAI API key
-        model: The model name (used for Azure OpenAI deployment path)
-    
-    Returns:
-        Configured OpenAI client
-    """
-    base_url = os.getenv('OPENAI_BASE_URL')
-    client_kwargs = {"api_key": api_key}
-    
-    if base_url and base_url.strip():
-        # Azure OpenAI configuration
-        client_kwargs["base_url"] = f"{base_url}/openai/deployments/{model}"
-        client_kwargs["default_query"] = {"api-version": "2024-02-15-preview"}
-    else:
-        # Standard OpenAI configuration
-        client_kwargs["base_url"] = "https://api.openai.com/v1"
-    
-    return OpenAI(**client_kwargs)
-
-import os
-import logging
-import json
-import numpy as np
-import re
-from typing import List, Dict, Any, Optional, Set
-from openai import OpenAI
-from github import Github
-from openai_utils import create_openai_client
+from azure_ai_foundry_utils import create_azure_ai_foundry_client, get_chat_client, get_embeddings_client
 
 
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
-    def __init__(self, github_token: str, openai_api_key: str, repo_full_name: str, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
         self.github_token = github_token
-        self.openai_api_key = openai_api_key
+        self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.azure_foundry_api_key = azure_foundry_api_key
         self.repo_full_name = repo_full_name
         # Load configuration from environment variables
-        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
         
-        # Create OpenAI client with proper Azure/OpenAI configuration
-        self.client = create_openai_client(openai_api_key, self.model)
+        # Create Azure AI Foundry client
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.client = get_chat_client(self.project_client)
+        self.embeddings_client = get_embeddings_client(self.project_client)
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
@@ -189,9 +157,9 @@ class CreatorAgent:
         return intersection / union if union > 0 else 0.0
 
     def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for a list of texts using OpenAI's text-embedding-ada-002 model."""
+        """Get embeddings for a list of texts using text-embedding-ada-002 model."""
         try:
-            response = self.client.embeddings.create(
+            response = self.embeddings_client.embeddings.create(
                 model="text-embedding-ada-002",
                 input=texts
             )
@@ -348,7 +316,8 @@ class CreatorAgent:
             model=self.model,
             messages=messages,  # type: ignore
             temperature=0.3,
-            max_tokens=1000
+            max_tokens=4000,  # Increased to account for reasoning tokens
+            response_format={"type": "json_object"}
         )
         result_text = response.choices[0].message.content
         self.last_conversation = {
@@ -357,6 +326,7 @@ class CreatorAgent:
             "llm_response": result_text
         }
         if not result_text:
+            self.logger.error(f"LLM returned empty response. Full response: {response}")
             raise ValueError("LLM returned empty response")
         try:
             # Clean up the response text (remove any markdown code blocks)
@@ -369,6 +339,9 @@ class CreatorAgent:
             
             issues = json.loads(cleaned_response)
             
+            self.logger.info(f"LLM response type: {type(issues)}")
+            self.logger.info(f"LLM response content: {issues}")
+            
             # Expect a JSON array of issues
             if isinstance(issues, list):
                 return issues[:max_issues]
@@ -376,13 +349,27 @@ class CreatorAgent:
                 # Handle wrapper objects like {"issues": [...]} or {"suggestions": [...]}
                 for key in ['issues', 'suggestions', 'items']:
                     if key in issues and isinstance(issues[key], list):
+                        self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
                         return issues[key][:max_issues]
+                
+                # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})
+                numeric_keys = [k for k in issues.keys() if k.isdigit()]
+                if numeric_keys:
+                    self.logger.info(f"Found numeric keys: {numeric_keys}")
+                    # Convert to list by sorting the numeric keys
+                    sorted_keys = sorted(numeric_keys, key=int)
+                    numeric_issues = [issues[k] for k in sorted_keys]
+                    return numeric_issues[:max_issues]
+                
                 # Handle single issue dict with 'title' and 'body'
                 if 'title' in issues and 'body' in issues:
                     return [issues]
             
             # If we get here, the format is unexpected
             self.logger.error(f"Unexpected LLM response format: {type(issues)}")
+            self.logger.error(f"Response keys: {list(issues.keys()) if isinstance(issues, dict) else 'Not a dict'}")
+            if isinstance(issues, dict) and len(issues) < 10:  # Only log if not too verbose
+                self.logger.error(f"Full response content: {issues}")
             return []
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse LLM response as JSON: {e}")

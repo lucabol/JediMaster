@@ -25,7 +25,7 @@ pwsh ./deploy_existing.ps1
 pwsh ./deploy_existing.ps1 -CreateIssues -ScheduleCron "0 0 * * * *"   # hourly
 
 .NOTES
-Requires: Azure CLI (az), Functions Core Tools (func), .env with GITHUB_TOKEN & OPENAI_API_KEY.
+Requires: Azure CLI (az), Functions Core Tools (func), .env with GITHUB_TOKEN, AZURE_AI_FOUNDRY_ENDPOINT & AZURE_AI_FOUNDRY_API_KEY.
 #>
 param(
   [string]$ResourceGroup = "jedimaster-rg",
@@ -46,7 +46,8 @@ foreach($line in $dotenv){ $k,$v = $line -split '=',2; $envMap[$k.Trim()] = $v.T
 function Require($k){ if(-not $envMap.ContainsKey($k)){ throw "Missing $k in .env" }; return $envMap[$k] }
 
 $github = Require "GITHUB_TOKEN"
-$openai = Require "OPENAI_API_KEY"
+$azureEndpoint = Require "AZURE_AI_FOUNDRY_ENDPOINT"
+$azureApiKey = Require "AZURE_AI_FOUNDRY_API_KEY"
 
 function Get-Opt($k,$default){ if($envMap.ContainsKey($k) -and $envMap[$k]){ return $envMap[$k] } return $default }
 
@@ -68,7 +69,8 @@ if ($CreateIssues -and -not $createCount) { $createCount = '3' }
 
 $settings = @(
   "GITHUB_TOKEN=$github"
-  "OPENAI_API_KEY=$openai"
+  "AZURE_AI_FOUNDRY_ENDPOINT=$azureEndpoint"
+  "AZURE_AI_FOUNDRY_API_KEY=$azureApiKey"
   "AUTOMATION_REPOS=$repos"
   "JUST_LABEL=$justLabel"
   "PROCESS_PRS=$processPrs"

@@ -8,7 +8,7 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 
 ## Features
 
-- **AI Issue Evaluation**: Uses OpenAI GPT models to analyze GitHub issues for Copilot suitability.
+- **AI Issue Evaluation**: Uses Azure AI Foundry models to analyze GitHub issues for Copilot suitability.
 - **Automated Assignment**: Assigns suitable issues to Copilot with labels and comments.
 - **Automated PR Review**: Reviews open pull requests using AI (PRDeciderAgent) and can comment or mark PRs as ready to merge.
 - **Multi-Repo & User Support**: Process issues and PRs for multiple repositories or all repos for a user.
@@ -53,14 +53,18 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
 
    Required environment variables:
    - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
-   - `OPENAI_API_KEY`: Your OpenAI API key
+   - `AZURE_AI_FOUNDRY_ENDPOINT`: Your Azure AI Foundry project endpoint
 
-   Optional OpenAI configuration:
-   - `OPENAI_MODEL`: OpenAI model to use (default: `gpt-3.5-turbo`)
-     - Examples: `gpt-3.5-turbo`, `gpt-4`, `gpt-4-turbo`
-   - `OPENAI_BASE_URL`: Custom OpenAI endpoint URL (leave empty for default OpenAI API)
-     - For Azure OpenAI: `https://your-resource.openai.azure.com/`
-     - For other OpenAI-compatible endpoints: `https://your-custom-endpoint.com/v1`
+   Optional Azure AI Foundry configuration:
+   - `AZURE_AI_MODEL`: Azure AI Foundry model to use (default: `model-router`)
+     - Examples: `model-router`, `gpt-4`, `gpt-4o`
+
+   **Authentication**: The application uses managed authentication (DefaultAzureCredential) to authenticate with Azure AI Foundry. This supports:
+   - Managed Identity (when running in Azure)
+   - Azure CLI authentication (for local development)
+   - Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
+   - Visual Studio authentication
+   - And other Azure credential sources
 
    Optional environment variables:
    - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
@@ -76,9 +80,9 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    ```bash
    # .env file (recommended for development)
    GITHUB_TOKEN=your_github_token
-   OPENAI_API_KEY=your_openai_api_key
-   OPENAI_MODEL=gpt-4  # Optional: defaults to gpt-3.5-turbo
-   OPENAI_BASE_URL=    # Optional: leave empty for default OpenAI API
+   AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
+   AZURE_AI_FOUNDRY_API_KEY=your_azure_ai_foundry_api_key
+   AZURE_AI_MODEL=model-router  # Optional: defaults to model-router
 
    ISSUE_ACTION=assign   # or label (default: label)
    TIMER_USERNAME=github-username
@@ -86,8 +90,9 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
 
    # Or set in your shell
    export GITHUB_TOKEN=your_github_token
-   export OPENAI_API_KEY=your_openai_api_key
-   export OPENAI_MODEL=gpt-4
+   export AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
+   export AZURE_AI_FOUNDRY_API_KEY=your_azure_ai_foundry_api_key
+   export AZURE_AI_MODEL=model-router
    ```
 
 ---
@@ -154,7 +159,8 @@ from jedimaster import JediMaster
 
 jm = JediMaster(
   github_token="<token>",
-  openai_api_key="<openai>",
+  azure_foundry_endpoint="<azure_endpoint>",
+  # No API key needed - uses managed authentication
   just_label=True,             # only label instead of assign
   use_topic_filter=True,       # or False to use .coding_agent file
   process_prs=False,

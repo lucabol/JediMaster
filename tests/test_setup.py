@@ -8,8 +8,8 @@ import os
 import json
 from unittest.mock import Mock, patch
 
-# Add the current directory to path so we can import our modules
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add the parent directory to path so we can import our modules
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def test_imports():
     """Test that all required modules can be imported."""
@@ -17,7 +17,8 @@ def test_imports():
     
     try:
         import requests
-        import openai
+        from azure.ai.projects import AIProjectClient
+        from azure.core.credentials import AzureKeyCredential
         from dotenv import load_dotenv
         from github import Github
         print("All required packages imported successfully")
@@ -27,14 +28,16 @@ def test_imports():
         return False
 
 def test_decider_agent():
-    """Test the DeciderAgent with mocked OpenAI responses."""
+    """Test the DeciderAgent with mocked Azure AI Foundry responses."""
     print("Testing DeciderAgent...")
     
     try:
         from decider import DeciderAgent
         
-        # Create a mock OpenAI client
-        with patch('decider.OpenAI') as mock_openai:
+        # Create a mock Azure AI Foundry client
+        with patch('decider.create_azure_ai_foundry_client') as mock_create_client, \
+             patch('decider.get_chat_client') as mock_get_chat_client:
+            
             # Mock the completion response
             mock_response = Mock()
             mock_response.choices = [Mock()]
@@ -43,12 +46,12 @@ def test_decider_agent():
                 "reasoning": "This is a test issue that involves coding tasks."
             })
             
-            mock_client = Mock()
-            mock_client.chat.completions.create.return_value = mock_response
-            mock_openai.return_value = mock_client
+            mock_chat_client = Mock()
+            mock_chat_client.chat.completions.create.return_value = mock_response
+            mock_get_chat_client.return_value = mock_chat_client
             
             # Test the decider
-            decider = DeciderAgent("fake-api-key")
+            decider = DeciderAgent("https://fake-endpoint.com", "fake-api-key")
             
             test_issue = {
                 "title": "Add error handling to API client",
@@ -115,7 +118,7 @@ def test_environment_example():
         with open('.env.example', 'r') as f:
             content = f.read()
             
-        required_vars = ['GITHUB_TOKEN', 'OPENAI_API_KEY']
+        required_vars = ['GITHUB_TOKEN', 'AZURE_AI_FOUNDRY_ENDPOINT', 'AZURE_AI_FOUNDRY_API_KEY']
         for var in required_vars:
             if var not in content:
                 print(f"❌ Required environment variable {var} not found in .env.example")

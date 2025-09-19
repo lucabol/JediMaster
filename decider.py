@@ -6,21 +6,20 @@ import json
 import logging
 import os
 from typing import Dict, Any
-from openai import OpenAI
-from openai_utils import create_openai_client
+from azure_ai_foundry_utils import create_azure_ai_foundry_client, get_chat_client
 
 
 class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
     # ...existing code...
 
-    def __init__(self, openai_api_key: str, model: str = None):
-        # ...existing code...
+    def __init__(self, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, model: str = None):
         # Load configuration from environment variables
-        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         
-        # Create OpenAI client with proper Azure/OpenAI configuration
-        self.client = create_openai_client(openai_api_key, self.model)
+        # Create Azure AI Foundry client
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.client = get_chat_client(self.project_client)
         self.logger = logging.getLogger('jedimaster.decider')
         # ...existing code...
         self.system_prompt = """You are an expert AI assistant tasked with evaluating GitHub issues to determine if they are suitable for GitHub Copilot assistance. GitHub Copilot excels at:
@@ -83,13 +82,17 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
                 model=self.model,
                 messages=messages,  # type: ignore
                 temperature=0.1,
-                max_tokens=500,
+                max_tokens=2000,  # Increased for reasoning models that use tokens for "thinking"
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content
             if result_text is None:
+                self.logger.error(f"LLM returned empty response. Full response: {response}")
                 raise ValueError("LLM returned empty response")
+            
+            self.logger.debug(f"LLM raw response: {result_text}")
             result = json.loads(result_text)
+            self.logger.debug(f"Parsed LLM response: {result}")
             if 'decision' not in result or 'reasoning' not in result:
                 raise ValueError("LLM response missing required fields")
             decision = result['decision'].lower().strip()
@@ -104,6 +107,7 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
             return validated_result
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            self.logger.error(f"Raw response that failed to parse: {result_text}")
             return {
                 'decision': 'no',
                 'reasoning': 'Error: Could not parse LLM response'
@@ -141,13 +145,13 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 class PRDeciderAgent:
     """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
 
-    def __init__(self, openai_api_key: str, model: str = None):
+    def __init__(self, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, model: str = None):
         # Load configuration from environment variables
-        # Load configuration from environment variables
-        self.model = model or os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+        self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         
-        # Create OpenAI client with proper Azure/OpenAI configuration
-        self.client = create_openai_client(openai_api_key, self.model)
+        # Create Azure AI Foundry client
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.client = get_chat_client(self.project_client)
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
     "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
@@ -175,20 +179,25 @@ class PRDeciderAgent:
                 model=self.model,
                 messages=messages,  # type: ignore
                 temperature=0.5,
-                max_tokens=500,
+                max_tokens=2000,  # Increased for reasoning models that use tokens for "thinking"
                 response_format={"type": "json_object"}
             )
             result_text = response.choices[0].message.content
             
             if result_text is None:
+                self.logger.error(f"LLM returned empty response. Full response: {response}")
                 raise ValueError("LLM returned empty response")
+            
+            self.logger.debug(f"LLM raw response: {result_text}")
             result = json.loads(result_text)
+            self.logger.debug(f"Parsed LLM response: {result}")
             if not (("decision" in result and result["decision"] == "accept") or "comment" in result):
                 raise ValueError("LLM response missing required fields: must have 'decision' or 'comment'")
             self.logger.debug(f"LLM PR review result: {result}")
             return result
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            self.logger.error(f"Raw response that failed to parse: {result_text}")
             return {
                 'comment': 'Error: Could not parse LLM response'
             }

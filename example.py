@@ -253,13 +253,14 @@ def main():
     # Load environment variables from .env file (if it exists)
     load_dotenv()
 
-    # Get API keys from environment (either from .env or system environment)
+    # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
 
-    if not github_token or not openai_api_key:
-        print("Please set GITHUB_TOKEN and OPENAI_API_KEY environment variables")
+    if not github_token or not azure_foundry_endpoint:
+        print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_ENDPOINT environment variables")
         print("Either in a .env file or as system environment variables")
+        print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return
 
     # Set up logging level (like jedimaster.py)
@@ -275,7 +276,7 @@ def main():
         repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-            creator = CreatorAgent(github_token, openai_api_key, repo_full_name)
+            creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name)
             results = creator.create_issues()
             for res in results:
                 if res.get('status') == 'created':
@@ -287,7 +288,8 @@ def main():
     # Initialize JediMaster
     jedimaster = JediMaster(
         github_token,
-        openai_api_key,
+        azure_foundry_endpoint,
+        None,  # No API key needed with managed authentication
         just_label=just_label,
         use_topic_filter=use_topic_filter,
         process_prs=args.process_prs,

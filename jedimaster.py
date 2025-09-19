@@ -464,11 +464,13 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, openai_api_key: str, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
         self.github_token = github_token
+        self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.azure_foundry_api_key = azure_foundry_api_key
         self.github = Github(github_token)
-        self.decider = DeciderAgent(openai_api_key)
-        self.pr_decider = PRDeciderAgent(openai_api_key)
+        self.decider = DeciderAgent(azure_foundry_endpoint, azure_foundry_api_key)
+        self.pr_decider = PRDeciderAgent(azure_foundry_endpoint, azure_foundry_api_key)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
         self.process_prs = process_prs
@@ -1064,7 +1066,7 @@ class JediMaster:
             out_filename = f"jedimaster_report_{timestamp}.json"
         else:
             out_filename = filename
-        with open(out_filename, 'w') as f:
+        with open(out_filename, 'w', encoding='utf-8') as f:
             json.dump(asdict(report), f, indent=2, ensure_ascii=False)
         self.logger.info(f"Report saved to {out_filename}")
         return out_filename
@@ -1154,18 +1156,19 @@ def main():
     # Load environment variables from .env file (if it exists)
     load_dotenv()
 
-    # Get API keys from environment (either from .env or system environment)
+    # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
 
     if not github_token:
         print("Error: GITHUB_TOKEN environment variable is required")
         print("Set it in .env file or as a system environment variable")
         return 1
 
-    if not openai_api_key:
-        print("Error: OPENAI_API_KEY environment variable is required")
+    if not azure_foundry_endpoint:
+        print("Error: AZURE_AI_FOUNDRY_ENDPOINT environment variable is required")
         print("Set it in .env file or as a system environment variable")
+        print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return 1
 
     # Set up logging level
@@ -1190,7 +1193,7 @@ def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                creator = CreatorAgent(github_token, openai_api_key, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
+                creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
                 results = creator.create_issues()
                 if not results:
                     print("No issues suggested by LLM.")
@@ -1203,7 +1206,8 @@ def main():
 
         jedimaster = JediMaster(
             github_token,
-            openai_api_key,
+            azure_foundry_endpoint,
+            None,  # No API key needed with managed authentication
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
             process_prs=args.process_prs,
@@ -1247,14 +1251,14 @@ def main():
 def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    if not github_token or not openai_api_key:
-        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    if not github_token or not azure_foundry_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, openai_api_key, just_label=just_label)
+    jm = JediMaster(github_token, azure_foundry_endpoint, None, just_label=just_label)
     repo_names = input_data.get('repo_names')
     if not repo_names or not isinstance(repo_names, list):
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
@@ -1267,14 +1271,14 @@ def process_issues_api(input_data: dict) -> dict:
 def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
-    if not github_token or not openai_api_key:
-        return {"error": "Missing GITHUB_TOKEN or OPENAI_API_KEY in environment"}
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    if not github_token or not azure_foundry_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, openai_api_key, just_label=just_label)
+    jm = JediMaster(github_token, azure_foundry_endpoint, None, just_label=just_label)
     username = input_data.get('username')
     if not username:
         return {"error": "Missing username in input"}

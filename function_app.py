@@ -10,12 +10,13 @@ app = func.FunctionApp()
 
 # Environment variable controls (all optional except tokens):
 # GITHUB_TOKEN (required)
-# OPENAI_API_KEY (required for LLM issue creation / decision logic)
+# AZURE_AI_FOUNDRY_ENDPOINT (required for Azure AI Foundry endpoint)
+# AZURE_AI_FOUNDRY_API_KEY (required for Azure AI Foundry API access)
 # AUTOMATION_REPOS: comma-separated list owner/repo (required)
 # SCHEDULE_CRON: optional cron expression (default: every 6 hours)
 # CREATE_ISSUES: if '1' or 'true', create issues
 # CREATE_ISSUES_COUNT: number of issues per repo (default 3 when CREATE_ISSUES enabled)
-# SIMILARITY_THRESHOLD: similarity threshold for duplicate detection (if set, uses OpenAI embeddings; if not set, uses local word-based detection)
+# SIMILARITY_THRESHOLD: similarity threshold for duplicate detection (if set, uses Azure AI embeddings; if not set, uses local word-based detection)
 # PROCESS_PRS: if '1' or 'true', run PR review logic
 # AUTO_MERGE: if '1' or 'true', attempt auto merge of approved PRs
 # JUST_LABEL: if '1' or 'true', only label issues (do not assign)
@@ -34,14 +35,14 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         logging.warning("[AutomateRepos] Timer is past due")
 
     github_token = os.getenv('GITHUB_TOKEN')
-    openai_api_key = os.getenv('OPENAI_API_KEY')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
     repos_env = os.getenv('AUTOMATION_REPOS')
 
     if not github_token:
         logging.error("[AutomateRepos] Missing GITHUB_TOKEN – aborting")
         return
-    if not openai_api_key:
-        logging.error("[AutomateRepos] Missing OPENAI_API_KEY – aborting")
+    if not azure_foundry_endpoint:
+        logging.error("[AutomateRepos] Missing AZURE_AI_FOUNDRY_ENDPOINT – aborting")
         return
     if not repos_env:
         logging.error("[AutomateRepos] AUTOMATION_REPOS not set – aborting")
@@ -97,7 +98,8 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     # Instantiate core orchestrator once; we'll reuse for all repos. We will toggle PR mode per path.
     jedi = JediMaster(
         github_token,
-        openai_api_key,
+        azure_foundry_endpoint,
+        None,  # No API key needed with managed authentication
         just_label=just_label_flag,
         use_topic_filter=not use_file_filter,
         process_prs=False,  # we'll call PR / merge flows explicitly
@@ -111,7 +113,7 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             # 1. Optional issue creation
             if create_issues_flag:
                 try:
-                    creator = CreatorAgent(github_token, openai_api_key, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
+                    creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
                     created = creator.create_issues(max_issues=create_count or 3)
                     repo_block['created_issues'] = created
                     summary['issue_creation'].append({'repo': repo_full, 'created': created})
