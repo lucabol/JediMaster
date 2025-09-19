@@ -191,6 +191,8 @@ def main():
     # Core parameters matching jedimaster.py
     parser.add_argument('--output', '-o',
                        help='Output filename for the report (default: auto-generated)')
+    parser.add_argument('--save-report', action='store_true',
+                       help='Save detailed report to JSON file (default: no)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
     parser.add_argument('--just-label', action='store_true',
@@ -363,12 +365,14 @@ def main():
         report = jedimaster.process_repositories(repo_names)
 
     # Save report
-    filename = jedimaster.save_report(report, args.output)  # Use --output parameter
+    if args.save_report:
+        filename = jedimaster.save_report(report, args.output)  # Use --output parameter
+        print(f"\nReport saved to: {filename}")
+    else:
+        print(f"\nReport not saved (use --save-report to save to file)")
 
     # Print summary
     jedimaster.print_summary(report)
-
-    print(f"\nReport saved to: {filename}")
 
     # Example of accessing individual results
     print(f"\nDetailed results:")

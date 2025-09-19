@@ -14,7 +14,7 @@ A Python tool and Azure Function for AI-powered evaluation and assignment of Git
 - **Multi-Repo & User Support**: Process issues and PRs for multiple repositories or all repos for a user.
 - **Flexible Deployment**: Run as a standalone Python script or as Azure Functions (HTTP & Timer triggers).
 - **Library API & Helper Script**: Import and orchestrate directly in Python or use `example.py` for advanced scenarios (auto-merge, repo reset, seeding demo issues, CreatorAgent flows).
-- **Comprehensive Reporting**: Generates detailed JSON reports.
+- **Comprehensive Reporting**: Optionally generates detailed JSON reports.
 - **Robust Error Handling**: Handles API, network, and data errors gracefully.
 
 ### Reset Endpoint (Azure Function)
@@ -132,6 +132,7 @@ python jedimaster.py -u github-username --process-prs
 
 - `--user, -u USERNAME`     GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)
 - `--output, -o FILENAME`   Output filename for the report (default: auto-generated)
+- `--save-report`           Save detailed report to JSON file (default: no)
 - `--verbose, -v`           Enable verbose logging
 - `--just-label`            Only add labels to issues, do not assign them to Copilot
 - `--use-file-filter`       Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)
@@ -169,7 +170,8 @@ jm = JediMaster(
 
 report = jm.process_repositories(["owner/repo1", "owner/repo2"])
 jm.print_summary(report)
-jm.save_report(report)
+# Optionally save report to file
+# jm.save_report(report)
 ```
 
 ---
@@ -338,7 +340,7 @@ func start
 ## Output
 
 - **Console**: Real-time progress and summary.
-- **JSON Report**: Detailed results, including assignment and PR review status, reasoning, and actions taken.
+- **JSON Report**: Detailed results, including assignment and PR review status, reasoning, and actions taken (only when `--save-report` flag is used).
 
 ---
 

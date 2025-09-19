@@ -1122,6 +1122,8 @@ def main():
 
     parser.add_argument('--output', '-o',
                        help='Output filename for the report (default: auto-generated)')
+    parser.add_argument('--save-report', action='store_true',
+                       help='Save detailed report to JSON file (default: no)')
     parser.add_argument('--verbose', '-v', action='store_true',
                        help='Enable verbose logging')
     parser.add_argument('--just-label', action='store_true',
@@ -1238,10 +1240,12 @@ def main():
                         print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}")
 
         # Save and display results
-        filename = jedimaster.save_report(report, args.output)
+        if args.save_report:
+            filename = jedimaster.save_report(report, args.output)
+            print(f"\nDetailed report saved to: {filename}")
+        else:
+            print("\nReport not saved (use --save-report to save to file)")
         jedimaster.print_summary(report)
-
-        print(f"\nDetailed report saved to: {filename}")
         return 0
 
     except Exception as e:
