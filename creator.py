@@ -32,12 +32,12 @@ class CreatorAgent:
         self.logger = logging.getLogger('jedimaster.creator')
         self.system_prompt = (
             "You are an expert AI assistant tasked with analyzing a GitHub repository and suggesting actionable, concrete issues that could be opened to improve the project. "
-            "You MUST return exactly the requested number of issues as a JSON array where each element is an object with 'title' and 'body' fields. "
+            "You MUST return exactly the requested number of issues as a JSON object with an 'issues' key containing an array of issue objects. "
             "Focus on different categories of improvements: bug fixes, new features, code quality improvements, documentation enhancements, testing, and performance optimizations. "
             "Each issue should be specific, actionable, and relevant to the code or documentation. "
             "Do not include duplicate or trivial issues. Make sure each issue is distinct and addresses different aspects of the project. "
-            "CRITICAL: Return ONLY a JSON array of objects, not a single object or a dict with nested arrays. "
-            "Example format: [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]"
+            "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
+            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]}"
         )
 
     def _gather_repo_context(self, max_chars: int = 12000) -> str:
@@ -302,10 +302,10 @@ class CreatorAgent:
         context = self._gather_repo_context()
         user_prompt = (
             f"Given the following repository context, suggest exactly {max_issues} new GitHub issues. "
-            f"You MUST return exactly {max_issues} distinct issues as a JSON array. "
+            f"You MUST return exactly {max_issues} distinct issues as a JSON object with an 'issues' key containing an array of {max_issues} issue objects. "
             "Each element should be an object with 'title' and 'body' fields. "
             "Focus on different categories: bug fixes, new features, code quality, documentation, testing, and performance. "
-            f"Return ONLY the JSON array with {max_issues} issues, no other text.\n\n"
+            f"Return ONLY the JSON object with an 'issues' key containing {max_issues} issues, no other text.\n\n"
             f"Repository context:\n{context}"
         )
         messages = [
@@ -342,12 +342,17 @@ class CreatorAgent:
             self.logger.info(f"LLM response type: {type(issues)}")
             self.logger.info(f"LLM response content: {issues}")
             
-            # Expect a JSON array of issues
-            if isinstance(issues, list):
+            # First check if it's a dict with an 'issues' key (our expected format)
+            if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
+                self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
+                return issues['issues'][:max_issues]
+            
+            # Fallback: Expect a JSON array of issues (legacy format)
+            elif isinstance(issues, list):
                 return issues[:max_issues]
             elif isinstance(issues, dict):
-                # Handle wrapper objects like {"issues": [...]} or {"suggestions": [...]}
-                for key in ['issues', 'suggestions', 'items']:
+                # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
+                for key in ['suggestions', 'items']:
                     if key in issues and isinstance(issues[key], list):
                         self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
                         return issues[key][:max_issues]
@@ -364,6 +369,11 @@ class CreatorAgent:
                 # Handle single issue dict with 'title' and 'body'
                 if 'title' in issues and 'body' in issues:
                     return [issues]
+                
+                # Check if it's an error response
+                if 'error' in issues:
+                    self.logger.error(f"LLM returned error: {issues['error']}")
+                    return []
             
             # If we get here, the format is unexpected
             self.logger.error(f"Unexpected LLM response format: {type(issues)}")

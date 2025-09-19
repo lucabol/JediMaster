@@ -205,6 +205,8 @@ def main():
                        help='Automatically merge reviewed PRs with no conflicts')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+    parser.add_argument('--similarity-threshold', type=float, nargs='?', const=0.9, metavar='THRESHOLD',
+                       help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9 with OpenAI embeddings, 0.5 with local similarity)')
 
     # Example-specific parameters
     parser.add_argument('--assign', action='store_true',
@@ -215,6 +217,19 @@ def main():
                        help='Reset the repo: close all issues and PRs, delete all branches except main, reset hello.c, and delete all files except hello.c, .gitignore, README.md, and .github directory.')
 
     args = parser.parse_args()
+
+    # Determine similarity mode and threshold
+    # If --similarity-threshold was used without a value, args.similarity_threshold will be 0.9 (const)
+    # If --similarity-threshold was used with a value, args.similarity_threshold will be that value
+    # If --similarity-threshold was not used at all, args.similarity_threshold will be None
+    use_openai_similarity = args.similarity_threshold is not None
+    similarity_threshold = args.similarity_threshold if args.similarity_threshold is not None else 0.9
+    
+    # Validate similarity threshold
+    if args.similarity_threshold is not None:
+        if not (0.0 <= similarity_threshold <= 1.0):
+            print("Error: Similarity threshold must be between 0.0 and 1.0")
+            return
 
     # Validate arguments (similar to jedimaster.py)
     if not args.user and not args.repositories:
