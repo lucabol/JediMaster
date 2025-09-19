@@ -11,7 +11,6 @@ app = func.FunctionApp()
 # Environment variable controls (all optional except tokens):
 # GITHUB_TOKEN (required)
 # AZURE_AI_FOUNDRY_ENDPOINT (required for Azure AI Foundry endpoint)
-# AZURE_AI_FOUNDRY_API_KEY (required for Azure AI Foundry API access)
 # AUTOMATION_REPOS: comma-separated list owner/repo (required)
 # SCHEDULE_CRON: optional cron expression (default: every 6 hours)
 # CREATE_ISSUES: if '1' or 'true', create issues

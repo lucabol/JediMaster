@@ -17,7 +17,6 @@ class CreatorAgent:
     def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
-        self.azure_foundry_api_key = azure_foundry_api_key
         self.repo_full_name = repo_full_name
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
@@ -25,7 +24,7 @@ class CreatorAgent:
         self.use_openai_similarity = use_openai_similarity
         
         # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
         self.client = get_chat_client(self.project_client)
         self.embeddings_client = get_embeddings_client(self.project_client)
         self.github = Github(github_token)

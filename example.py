@@ -306,7 +306,6 @@ def main():
     jedimaster = JediMaster(
         github_token,
         azure_foundry_endpoint,
-        None,  # No API key needed with managed authentication
         just_label=just_label,
         use_topic_filter=use_topic_filter,
         process_prs=args.process_prs,

@@ -14,7 +14,6 @@ def create_azure_ai_foundry_client(endpoint: str, api_key: str = None):
     
     Args:
         endpoint: The Azure AI Foundry endpoint (can be full OpenAI endpoint or base endpoint)
-        api_key: Unused - kept for backward compatibility but ignored
     
     Returns:
         Configured AzureOpenAI client using DefaultAzureCredential

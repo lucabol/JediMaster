@@ -464,13 +464,12 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
-        self.azure_foundry_api_key = azure_foundry_api_key
         self.github = Github(github_token)
-        self.decider = DeciderAgent(azure_foundry_endpoint, azure_foundry_api_key)
-        self.pr_decider = PRDeciderAgent(azure_foundry_endpoint, azure_foundry_api_key)
+        self.decider = DeciderAgent(azure_foundry_endpoint)
+        self.pr_decider = PRDeciderAgent(azure_foundry_endpoint)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
         self.process_prs = process_prs

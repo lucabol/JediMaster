@@ -81,7 +81,6 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    # .env file (recommended for development)
    GITHUB_TOKEN=your_github_token
    AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
-   AZURE_AI_FOUNDRY_API_KEY=your_azure_ai_foundry_api_key
    AZURE_AI_MODEL=model-router  # Optional: defaults to model-router
 
    ISSUE_ACTION=assign   # or label (default: label)
@@ -91,7 +90,6 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    # Or set in your shell
    export GITHUB_TOKEN=your_github_token
    export AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
-   export AZURE_AI_FOUNDRY_API_KEY=your_azure_ai_foundry_api_key
    export AZURE_AI_MODEL=model-router
    ```
 
@@ -161,7 +159,7 @@ from jedimaster import JediMaster
 jm = JediMaster(
   github_token="<token>",
   azure_foundry_endpoint="<azure_endpoint>",
-  # No API key needed - uses managed authentication
+  # Uses managed authentication (no API key needed)
   just_label=True,             # only label instead of assign
   use_topic_filter=True,       # or False to use .coding_agent file
   process_prs=False,
@@ -295,7 +293,7 @@ Recommendations (Python Azure Functions best practices):
 - Deploy to Linux plan (Flex Consumption (FC1) preferred; fallback to Elastic Premium if needed).
 - Keep secrets in Azure Function App settings or Key Vault references (avoid committing `.env`).
 - Enable Application Insights for monitoring.
-- Secure HTTP endpoints (default level `function`; add an API key or front door / APIM if exposed externally).
+- Secure HTTP endpoints (default level `function`; consider front door / APIM if exposed externally).
 - For scheduled automation, adjust `SCHEDULE_CRON` without code changes.
 
 Basic deployment steps (one-off manual path):

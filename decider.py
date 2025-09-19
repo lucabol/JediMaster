@@ -13,12 +13,11 @@ class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
     # ...existing code...
 
-    def __init__(self, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, model: str = None):
+    def __init__(self, azure_foundry_endpoint: str, model: str = None):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
-        
         # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
         self.client = get_chat_client(self.project_client)
         self.logger = logging.getLogger('jedimaster.decider')
         # ...existing code...
@@ -145,28 +144,27 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 class PRDeciderAgent:
     """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
 
-    def __init__(self, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, model: str = None):
+    def __init__(self, azure_foundry_endpoint: str, model: str = None):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
-        
         # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint, azure_foundry_api_key)
+        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
         self.client = get_chat_client(self.project_client)
         self.logger = logging.getLogger('jedimaster.prdecider')
         self.system_prompt = (
-    "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
-    "You must make a binary decision for each PR:\n\n"
-    "Respond with a JSON object containing either:\n"
-    "- {'decision': 'accept'} if the PR can be merged as-is\n"
-    "- {'comment': 'detailed feedback'} if changes are needed\n\n"
-    "When you provide a comment, the PR will get a formal CHANGES_REQUESTED review state.\n"
-    "When you accept, the PR will get an APPROVED review state.\n\n"
-    "Guidelines:\n"
-    "- Accept PRs that are well-written, properly tested, and ready to merge\n"
-    "- Request changes for PRs that need improvements, missing tests, unclear code, etc.\n"
-    "- Provide specific, actionable feedback in your comments\n"
-    "- Consider code quality, completeness, and adherence to best practices"
-)
+            "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
+            "You must make a binary decision for each PR:\n\n"
+            "Respond with a JSON object containing either:\n"
+            "- {'decision': 'accept'} if the PR can be merged as-is\n"
+            "- {'comment': 'detailed feedback'} if changes are needed\n\n"
+            "When you provide a comment, the PR will get a formal CHANGES_REQUESTED review state.\n"
+            "When you accept, the PR will get an APPROVED review state.\n\n"
+            "Guidelines:\n"
+            "- Accept PRs that are well-written, properly tested, and ready to merge\n"
+            "- Request changes for PRs that need improvements, missing tests, unclear code, etc.\n"
+            "- Provide specific, actionable feedback in your comments\n"
+            "- Consider code quality, completeness, and adherence to best practices"
+        )
 
     def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""

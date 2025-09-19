@@ -5,6 +5,7 @@ Configures and publishes the existing Azure Function App (timer automation) with
 .DESCRIPTION
 Reads secrets from .env, applies Function App settings (AUTOMATION_REPOS, schedule, etc.), and publishes code.
 Assumes the Function App and its resource group already exist.
+Supports both API key and Managed Identity authentication for Foundry APIs.
 
 .PARAMETER ResourceGroup
 Azure resource group containing the Function App (default: jedimaster-rg)
@@ -25,7 +26,8 @@ pwsh ./deploy_existing.ps1
 pwsh ./deploy_existing.ps1 -CreateIssues -ScheduleCron "0 0 * * * *"   # hourly
 
 .NOTES
-Requires: Azure CLI (az), Functions Core Tools (func), .env with GITHUB_TOKEN, AZURE_AI_FOUNDRY_ENDPOINT & AZURE_AI_FOUNDRY_API_KEY.
+Requires: Azure CLI (az), Functions Core Tools (func), .env with GITHUB_TOKEN, AZURE_AI_FOUNDRY_ENDPOINT, and either AZURE_AI_FOUNDRY_API_KEY (for API key auth) or USE_MANAGED_IDENTITY=1 (for Managed Identity auth).
+If using Managed Identity, assign the identity to the Function App and grant it access to Foundry APIs. AZURE_AI_FOUNDRY_API_KEY is not required in this case.
 #>
 param(
   [string]$ResourceGroup = "jedimaster-rg",
@@ -45,9 +47,17 @@ $envMap = @{}
 foreach($line in $dotenv){ $k,$v = $line -split '=',2; $envMap[$k.Trim()] = $v.Trim() }
 function Require($k){ if(-not $envMap.ContainsKey($k)){ throw "Missing $k in .env" }; return $envMap[$k] }
 
+
 $github = Require "GITHUB_TOKEN"
 $azureEndpoint = Require "AZURE_AI_FOUNDRY_ENDPOINT"
-$azureApiKey = Require "AZURE_AI_FOUNDRY_API_KEY"
+$useManagedIdentity = $false
+if ($envMap.ContainsKey("USE_MANAGED_IDENTITY") -and $envMap["USE_MANAGED_IDENTITY"] -eq '1') {
+  $useManagedIdentity = $true
+}
+$azureApiKey = $null
+if (-not $useManagedIdentity) {
+  $azureApiKey = Require "AZURE_AI_FOUNDRY_API_KEY"
+}
 
 function Get-Opt($k,$default){ if($envMap.ContainsKey($k) -and $envMap[$k]){ return $envMap[$k] } return $default }
 
@@ -65,12 +75,17 @@ $useFile      = Get-Opt 'USE_FILE_FILTER' '0'
 
 if (-not $ScheduleCron) { $ScheduleCron = $cronFromEnv }
 if ($CreateIssues -and $createEnv -ne '1') { $createEnv = '1' }
+#$azureApiKey = $null
+#if (-not $useManagedIdentity) {
+#  $azureApiKey = Require "AZURE_AI_FOUNDRY_API_KEY"
+#}
 if ($CreateIssues -and -not $createCount) { $createCount = '3' }
 
+
+# Build app settings, conditionally include API key or managed identity flag
 $settings = @(
   "GITHUB_TOKEN=$github"
   "AZURE_AI_FOUNDRY_ENDPOINT=$azureEndpoint"
-  "AZURE_AI_FOUNDRY_API_KEY=$azureApiKey"
   "AUTOMATION_REPOS=$repos"
   "JUST_LABEL=$justLabel"
   "PROCESS_PRS=$processPrs"
@@ -80,6 +95,11 @@ $settings = @(
   "USE_FILE_FILTER=$useFile"
   "SCHEDULE_CRON=$ScheduleCron"
 )
+if ($useManagedIdentity) {
+    $settings += "USE_MANAGED_IDENTITY=1"
+} else {
+    $settings += "AZURE_AI_FOUNDRY_API_KEY=$azureApiKey"
+}
 
 Write-Host "Applying settings..." -ForegroundColor Cyan
 az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings $settings | Out-Null
@@ -95,3 +115,8 @@ Write-Host "  Create Issues: $createEnv (count=$createCount)"
 Write-Host "  JUST_LABEL:    $justLabel"
 Write-Host "  PROCESS_PRS:   $processPrs  AUTO_MERGE: $autoMerge"
 Write-Host "  Schedule:      $ScheduleCron"
+if ($useManagedIdentity) {
+  Write-Host "  Auth:          Managed Identity" -ForegroundColor Yellow
+} else {
+  Write-Host "  Auth:          API Key" -ForegroundColor Yellow
+}
