@@ -58,13 +58,17 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    Optional Azure AI Foundry configuration:
    - `AZURE_AI_MODEL`: Azure AI Foundry model to use (default: `model-router`)
      - Examples: `model-router`, `gpt-4`, `gpt-4o`
+   - `AI_RESOURCE_GROUP`: Resource group containing the AI Foundry resource (used by deployment script)
+   - `AI_RESOURCE_NAME`: Name of the AI Foundry resource (used by deployment script)
 
-   **Authentication**: The application uses managed authentication (DefaultAzureCredential) to authenticate with Azure AI Foundry. This supports:
-   - Managed Identity (when running in Azure)
+   **Authentication**: The application uses **Managed Identity authentication by default** (DefaultAzureCredential) to authenticate with Azure AI Foundry. This supports:
+   - **Managed Identity (preferred for Azure deployments)**
    - Azure CLI authentication (for local development)
    - Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
    - Visual Studio authentication
    - And other Azure credential sources
+
+   **No API keys required** - the deployment script automatically configures managed identity and role assignments.
 
    Optional environment variables:
    - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
@@ -295,8 +299,38 @@ Recommendations (Python Azure Functions best practices):
 - Enable Application Insights for monitoring.
 - Secure HTTP endpoints (default level `function`; consider front door / APIM if exposed externally).
 - For scheduled automation, adjust `SCHEDULE_CRON` without code changes.
+- **Managed Identity is configured automatically** by the deployment script.
 
-Basic deployment steps (one-off manual path):
+**Recommended deployment using the included script:**
+
+1. Create a `.env` file with required variables:
+   ```bash
+   # Required configuration
+   GITHUB_TOKEN=your_token
+   RESOURCE_GROUP=jedimaster-rg
+   FUNCTION_APP_NAME=JediMaster
+   AZURE_AI_FOUNDRY_ENDPOINT=https://your-resource.cognitiveservices.azure.com
+   
+   # Required for automation
+   AUTOMATION_REPOS=owner/repo1,owner/repo2
+   
+   # Optional AI resource configuration
+   AI_RESOURCE_GROUP=rg-lucabol-4040
+   # AI_RESOURCE_NAME=my-ai-resource  # Auto-detected from endpoint
+   ```
+
+2. Run the deployment script (no parameters needed):
+   ```powershell
+   .\deploy_existing.ps1
+   ```
+
+The script automatically:
+- Reads all configuration from `.env` file
+- Enables system-assigned managed identity on the Function App
+- Configures role assignments for Azure AI Foundry access
+- Deploys the code with proper settings
+
+Basic manual deployment steps (if not using the script):
 
 ```bash
 # Log in
@@ -308,7 +342,7 @@ az group create -n rg-jedimaster -l westus2
 # Create a storage account (required for Functions)
 az storage account create -g rg-jedimaster -n <uniqueStorageName> -l westus2 --sku Standard_LRS
 
-# Create a Linux Flex Consumption Function App (preview naming may vary)
+# Create a Linux Flex Consumption Function App
 az functionapp plan create -g rg-jedimaster -n plan-jedimaster --flex-consumption --location westus2
 az functionapp create -g rg-jedimaster -n jedimaster-func \
   --storage-account <uniqueStorageName> \
@@ -316,9 +350,19 @@ az functionapp create -g rg-jedimaster -n jedimaster-func \
   --runtime python \
   --functions-version 4
 
-# Configure required settings
+# Enable managed identity and configure role assignment
+az functionapp identity assign -n jedimaster-func -g rg-jedimaster
+PRINCIPAL_ID=$(az functionapp identity show -n jedimaster-func -g rg-jedimaster --query principalId -o tsv)
+az role assignment create --assignee $PRINCIPAL_ID --role "Cognitive Services User" --scope /subscriptions/<sub-id>/resourceGroups/<ai-rg>/providers/Microsoft.CognitiveServices/accounts/<ai-resource>
+
+# Configure required settings (no API key needed)
 az functionapp config appsettings set -g rg-jedimaster -n jedimaster-func --settings \
-  GITHUB_TOKEN=*** OPENAI_API_KEY=*** AUT0MATION_REPOS=owner/repo1,owner/repo2 JUST_LABEL=1 PROCESS_PRS=1 AUTO_MERGE=1
+  GITHUB_TOKEN=*** \
+  AZURE_AI_FOUNDRY_ENDPOINT=*** \
+  AUTOMATION_REPOS=owner/repo1,owner/repo2 \
+  JUST_LABEL=1 \
+  PROCESS_PRS=1 \
+  AUTO_MERGE=1
 
 # Deploy source (from repo root)
 func azure functionapp publish jedimaster-func
