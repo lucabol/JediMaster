@@ -142,96 +142,130 @@ if (-not $aiResourceId) {
 Write-Host "Applying settings..." -ForegroundColor Cyan
 az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings $settings | Out-Null
 
-# Temporarily enable storage access for deployment
-Write-Host "Preparing storage access for deployment..." -ForegroundColor Cyan
-
-# Get the Function App's storage account name
-$storageConnectionString = az functionapp config appsettings list --name $FunctionAppName --resource-group $ResourceGroup --query "[?name=='AzureWebJobsStorage'].value" -o tsv
-if ($storageConnectionString -match "AccountName=([^;]+)") {
-    $storageAccountName = $matches[1]
-    Write-Host "  Found storage account: $storageAccountName"
-    
-    # Capture original network settings
-    Write-Host "  Capturing original network settings..."
-    $originalSettings = az storage account show --name $storageAccountName --resource-group $ResourceGroup --query "{publicNetworkAccess: publicNetworkAccess, defaultAction: networkRuleSet.defaultAction}" | ConvertFrom-Json
-    $originalPublicAccess = $originalSettings.publicNetworkAccess
-    $originalDefaultAction = $originalSettings.defaultAction
-    
-    Write-Host "  Original settings: PublicAccess=$originalPublicAccess, DefaultAction=$originalDefaultAction" -ForegroundColor Yellow
-} else {
-    Write-Warning "Could not extract storage account name from connection string. Deployment may fail due to storage access restrictions."
-    $storageAccountName = $null
-}
-
-# Function to restore storage settings
-function Restore-StorageSettings {
-    param($storageAccount, $resourceGroup, $originalPublic, $originalDefault)
-    if ($storageAccount) {
-        Write-Host "  Restoring original storage settings..." -ForegroundColor Cyan
-        try {
-            if ($originalDefault -eq "Deny") {
-                az storage account update --name $storageAccount --resource-group $resourceGroup --default-action Deny | Out-Null
-            }
-            if ($originalPublic -eq "Disabled") {
-                az storage account update --name $storageAccount --resource-group $resourceGroup --public-network-access Disabled | Out-Null
-            }
-            Write-Host "  ✓ Storage settings restored successfully" -ForegroundColor Green
-        } catch {
-            Write-Warning "Failed to restore storage settings. You may need to restore manually:"
-            Write-Warning "  az storage account update --name $storageAccount --resource-group $resourceGroup --default-action $originalDefault"
-            Write-Warning "  az storage account update --name $storageAccount --resource-group $resourceGroup --public-network-access $originalPublic"
-        }
-    }
-}
-
-# Deploy with temporary storage access
+# Deploy function app
 Write-Host "Publishing code..." -ForegroundColor Cyan
 
+# Ensure we're in the correct directory (where host.json is located)
+$projectRoot = $PSScriptRoot
+Write-Host "  Project root: $projectRoot" -ForegroundColor Gray
+Set-Location $projectRoot
+
+# Verify host.json exists
+if (-not (Test-Path "host.json")) {
+    throw "host.json not found in $projectRoot. Cannot deploy Azure Function."
+}
+
+Write-Host "  Starting deployment to $FunctionAppName..." -ForegroundColor Yellow
+Write-Host "  This may take several minutes, especially for the first deployment or when dependencies change." -ForegroundColor Yellow
+Write-Host "  Common steps that may take time:" -ForegroundColor Gray
+Write-Host "    - Uploading files" -ForegroundColor Gray
+Write-Host "    - Installing Python packages" -ForegroundColor Gray
+Write-Host "    - Deleting old .python_packages directory" -ForegroundColor Gray
+Write-Host "    - Syncing triggers" -ForegroundColor Gray
+Write-Host ""
+
+# Use Start-Process to run func with real-time output and better control
+$startTime = Get-Date
+Write-Host "  Deployment started at: $($startTime.ToString('HH:mm:ss'))" -ForegroundColor Gray
+
 try {
-    # Temporarily enable storage access if needed
-    $deploymentSuccessful = $false
+    # Run func publish with verbose output and capture both stdout and stderr
+    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $processInfo.FileName = "func"
+    $processInfo.Arguments = "azure functionapp publish $FunctionAppName --verbose"
+    $processInfo.UseShellExecute = $false
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $processInfo.CreateNoWindow = $true
+    $processInfo.WorkingDirectory = $projectRoot  # Explicitly set working directory for the process
     
-    if ($storageAccountName) {
-        # Check if we need to modify storage settings
-        if ($originalPublicAccess -eq "Disabled" -or $originalDefaultAction -eq "Deny") {
-            Write-Host "  Temporarily enabling storage access..." -ForegroundColor Yellow
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $processInfo
+    
+    # Event handlers for real-time output
+    $outputBuilder = New-Object System.Text.StringBuilder
+    $errorBuilder = New-Object System.Text.StringBuilder
+    
+    $outputHandler = {
+        if ($EventArgs.Data) {
+            $line = $EventArgs.Data
+            Write-Host "  FUNC: $line" -ForegroundColor Gray
+            [void]$outputBuilder.AppendLine($line)
             
-            # Enable public access and allow all networks
-            if ($originalDefaultAction -eq "Deny") {
-                az storage account update --name $storageAccountName --resource-group $ResourceGroup --default-action Allow | Out-Null
+            # Check for specific messages that indicate progress
+            if ($line -match "Deleting the old \.python_packages directory") {
+                Write-Host "    ► Deleting old Python packages... (this can take 2-5 minutes)" -ForegroundColor Yellow
+            } elseif ($line -match "Installing dependencies") {
+                Write-Host "    ► Installing Python dependencies..." -ForegroundColor Yellow
+            } elseif ($line -match "Uploading") {
+                Write-Host "    ► Uploading files..." -ForegroundColor Yellow
+            } elseif ($line -match "Syncing triggers") {
+                Write-Host "    ► Syncing triggers..." -ForegroundColor Yellow
+            } elseif ($line -match "Deployment successful") {
+                Write-Host "    ► Deployment completed!" -ForegroundColor Green
             }
-            if ($originalPublicAccess -eq "Disabled") {
-                az storage account update --name $storageAccountName --resource-group $ResourceGroup --public-network-access Enabled | Out-Null
-            }
-            
-            Write-Host "  ✓ Storage access temporarily enabled" -ForegroundColor Green
         }
     }
     
-    # Attempt deployment
-    Write-Host "  Deploying function app..."
-    $deployResult = func azure functionapp publish $FunctionAppName 2>&1
+    $errorHandler = {
+        if ($EventArgs.Data) {
+            Write-Host "  ERROR: $($EventArgs.Data)" -ForegroundColor Red
+            [void]$errorBuilder.AppendLine($EventArgs.Data)
+        }
+    }
     
-    if ($LASTEXITCODE -eq 0) {
-        $deploymentSuccessful = $true
-        Write-Host "  ✓ Deployment completed successfully" -ForegroundColor Green
+    Register-ObjectEvent -InputObject $process -EventName OutputDataReceived -Action $outputHandler | Out-Null
+    Register-ObjectEvent -InputObject $process -EventName ErrorDataReceived -Action $errorHandler | Out-Null
+    
+    $process.Start()
+    $process.BeginOutputReadLine()
+    $process.BeginErrorReadLine()
+    
+    # Wait for completion with periodic status updates
+    $timeoutMinutes = 15  # 15 minute timeout
+    $checkIntervalSeconds = 30
+    $maxWaitTime = $timeoutMinutes * 60
+    $elapsedSeconds = 0
+    
+    while (-not $process.HasExited -and $elapsedSeconds -lt $maxWaitTime) {
+        Start-Sleep -Seconds $checkIntervalSeconds
+        $elapsedSeconds += $checkIntervalSeconds
+        
+        if ($elapsedSeconds % 120 -eq 0) {  # Every 2 minutes
+            $elapsed = [math]::Round($elapsedSeconds / 60, 1)
+            Write-Host "  ⏱️  Deployment still running... ($elapsed minutes elapsed)" -ForegroundColor Cyan
+        }
+    }
+    
+    if (-not $process.HasExited) {
+        Write-Host "  ⚠️  Deployment taking longer than expected ($timeoutMinutes minutes). Continuing to wait..." -ForegroundColor Yellow
+        $process.WaitForExit()
+    }
+    
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    
+    if ($process.ExitCode -eq 0) {
+        Write-Host "  ✓ Deployment completed successfully in $($duration.TotalMinutes.ToString('F1')) minutes" -ForegroundColor Green
     } else {
-        Write-Error "Deployment failed. Output: $deployResult"
-        throw "Function app deployment failed"
+        $errorOutput = $errorBuilder.ToString()
+        $standardOutput = $outputBuilder.ToString()
+        throw "Function app deployment failed with exit code $($process.ExitCode).`nOutput: $standardOutput`nErrors: $errorOutput"
     }
     
 } catch {
-    Write-Error "Error during deployment: $_"
-    $deploymentError = $_
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    Write-Host "  ❌ Deployment failed after $($duration.TotalMinutes.ToString('F1')) minutes" -ForegroundColor Red
+    throw "Deployment error: $_"
 } finally {
-    # Always restore original storage settings
-    if ($storageAccountName -and ($originalPublicAccess -eq "Disabled" -or $originalDefaultAction -eq "Deny")) {
-        Restore-StorageSettings $storageAccountName $ResourceGroup $originalPublicAccess $originalDefaultAction
+    # Clean up event handlers
+    Get-EventSubscriber | Where-Object { $_.SourceObject -eq $process } | Unregister-Event
+    if ($process -and -not $process.HasExited) {
+        $process.Kill()
     }
-    
-    # Re-throw deployment error if it occurred
-    if ($deploymentError) {
-        throw $deploymentError
+    if ($process) {
+        $process.Dispose()
     }
 }
 
@@ -245,8 +279,3 @@ Write-Host "  PROCESS_PRS:      $processPrs  AUTO_MERGE: $autoMerge"
 Write-Host "  Schedule:         $ScheduleCron"
 Write-Host "  Auth:             Managed Identity" -ForegroundColor Green
 Write-Host "  AI Resource:      $($aiInfo.ResourceName) (RG: $($aiInfo.ResourceGroup))" -ForegroundColor Green
-if ($storageAccountName -and ($originalPublicAccess -eq "Disabled" -or $originalDefaultAction -eq "Deny")) {
-    Write-Host "  Storage Access:   Temporarily modified during deployment, now restored" -ForegroundColor Yellow
-} else {
-    Write-Host "  Storage Access:   No modification required" -ForegroundColor Green
-}
