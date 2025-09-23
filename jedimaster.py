@@ -1208,7 +1208,6 @@ def main():
         jedimaster = JediMaster(
             github_token,
             azure_foundry_endpoint,
-            None,  # No API key needed with managed authentication
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
             process_prs=args.process_prs,
@@ -1261,7 +1260,7 @@ def process_issues_api(input_data: dict) -> dict:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, azure_foundry_endpoint, None, just_label=just_label)
+    jm = JediMaster(github_token, azure_foundry_endpoint, just_label=just_label)
     repo_names = input_data.get('repo_names')
     if not repo_names or not isinstance(repo_names, list):
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
@@ -1281,7 +1280,7 @@ def process_user_api(input_data: dict) -> dict:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, azure_foundry_endpoint, None, just_label=just_label)
+    jm = JediMaster(github_token, azure_foundry_endpoint, just_label=just_label)
     username = input_data.get('username')
     if not username:
         return {"error": "Missing username in input"}

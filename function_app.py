@@ -98,7 +98,6 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     jedi = JediMaster(
         github_token,
         azure_foundry_endpoint,
-        None,  # No API key needed with managed authentication
         just_label=just_label_flag,
         use_topic_filter=not use_file_filter,
         process_prs=False,  # we'll call PR / merge flows explicitly
