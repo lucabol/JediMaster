@@ -475,6 +475,113 @@ class JediMaster:
         self.process_prs = process_prs
         self.auto_merge_reviewed = auto_merge_reviewed
         self.logger = self._setup_logger()
+        # Get merge retry limit from environment
+        self.merge_max_retries = self._get_merge_max_retries()
+
+    def _get_merge_max_retries(self) -> int:
+        """Get the maximum number of merge retry attempts from environment variable."""
+        try:
+            max_retries = int(os.getenv('MERGE_MAX_RETRIES', '3'))
+            if max_retries < 1:
+                self.logger.warning(f"MERGE_MAX_RETRIES must be >= 1, using default of 3")
+                return 3
+            return max_retries
+        except ValueError:
+            self.logger.warning(f"Invalid MERGE_MAX_RETRIES value, using default of 3")
+            return 3
+
+    def _get_merge_attempt_count(self, pr) -> int:
+        """Get the current merge attempt count from PR labels."""
+        try:
+            labels = [label.name for label in pr.labels]
+            for label in labels:
+                if label.startswith('merge-attempt-'):
+                    try:
+                        return int(label.split('-')[-1])
+                    except ValueError:
+                        continue
+            return 0
+        except Exception as e:
+            self.logger.error(f"Error getting merge attempt count for PR #{pr.number}: {e}")
+            return 0
+
+    def _increment_merge_attempt_count(self, pr) -> int:
+        """Increment the merge attempt counter and return the new count."""
+        try:
+            current_count = self._get_merge_attempt_count(pr)
+            new_count = current_count + 1
+            
+            # Remove old attempt label if it exists
+            if current_count > 0:
+                old_label_name = f'merge-attempt-{current_count}'
+                try:
+                    pr.remove_from_labels(old_label_name)
+                except Exception as e:
+                    self.logger.debug(f"Could not remove old label {old_label_name}: {e}")
+            
+            # Add new attempt label
+            new_label_name = f'merge-attempt-{new_count}'
+            
+            # Create label if it doesn't exist
+            try:
+                repo = pr.repository if hasattr(pr, 'repository') else pr.base.repo
+                try:
+                    repo.get_label(new_label_name)
+                except:
+                    repo.create_label(
+                        name=new_label_name,
+                        color="ff9500",
+                        description=f"This PR has had {new_count} merge attempt(s)"
+                    )
+                
+                pr.add_to_labels(new_label_name)
+                self.logger.info(f"Incremented merge attempt count to {new_count} for PR #{pr.number}")
+                
+            except Exception as e:
+                self.logger.error(f"Failed to add merge attempt label to PR #{pr.number}: {e}")
+            
+            return new_count
+        except Exception as e:
+            self.logger.error(f"Error incrementing merge attempt count for PR #{pr.number}: {e}")
+            return 1  # Default to 1 if we can't track properly
+
+    def _mark_pr_max_retries_exceeded(self, pr):
+        """Mark a PR as having exceeded maximum merge retry attempts."""
+        try:
+            repo = pr.repository if hasattr(pr, 'repository') else pr.base.repo
+            
+            # Create the max retries exceeded label if it doesn't exist
+            max_retries_label_name = "merge-failed-max-retries"
+            try:
+                max_retries_label = repo.get_label(max_retries_label_name)
+            except:
+                max_retries_label = repo.create_label(
+                    name=max_retries_label_name,
+                    color="d73a49",
+                    description=f"Merge failed after {self.merge_max_retries} attempts - manual intervention required"
+                )
+            
+            pr.add_to_labels(max_retries_label)
+            
+            # Add a comment explaining the situation
+            comment_body = f"""⚠️ **Auto-merge failed after {self.merge_max_retries} attempts**
+
+This PR has exceeded the maximum number of automatic merge retry attempts. Please review and merge manually if appropriate.
+
+Possible reasons for merge failures:
+- Merge conflicts that need manual resolution  
+- Branch protection rules blocking the merge
+- Required status checks not passing
+- Permission issues
+
+The auto-merge system will no longer attempt to merge this PR automatically."""
+            
+            pr.create_issue_comment(comment_body)
+            
+            self.logger.warning(f"PR #{pr.number} marked as max retries exceeded after {self.merge_max_retries} attempts")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to mark PR #{pr.number} as max retries exceeded: {e}")
 
     def merge_reviewed_pull_requests(self, repo_name: str):
         """Merge PRs that are approved and have no conflicts with the base branch. If PR is a draft, mark as ready for review first."""
@@ -485,7 +592,21 @@ class JediMaster:
             self.logger.info(f"Found {len(pulls)} open PRs in {repo_name}")
             
             for pr in pulls:
-                self.logger.info(f"Checking PR #{pr.number}: '{pr.title}' (draft: {getattr(pr, 'draft', 'unknown')}, mergeable: {pr.mergeable})")
+                # Check if PR has already exceeded max retry attempts
+                if any(label.name == "merge-failed-max-retries" for label in pr.labels):
+                    self.logger.info(f"PR #{pr.number} in {repo_name} has exceeded max merge retries, skipping")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'max_retries_exceeded'})
+                    continue
+                
+                # Check current attempt count
+                current_attempts = self._get_merge_attempt_count(pr)
+                if current_attempts >= self.merge_max_retries:
+                    self.logger.warning(f"PR #{pr.number} in {repo_name} has reached max merge attempts ({current_attempts}), marking as failed")
+                    self._mark_pr_max_retries_exceeded(pr)
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'max_retries_exceeded', 'attempts': current_attempts})
+                    continue
+                
+                self.logger.info(f"Checking PR #{pr.number}: '{pr.title}' (draft: {getattr(pr, 'draft', 'unknown')}, mergeable: {pr.mergeable}, attempts: {current_attempts})")
                 
                 # Check if PR is approved (reviewed)
                 reviews = list(pr.get_reviews())
@@ -590,6 +711,9 @@ class JediMaster:
                 # Check for mergeability (no conflicts)
                 if pr.mergeable is False:
                     self.logger.info(f"PR #{pr.number} in {repo_name} is approved but has conflicts, skipping merge")
+                    # Increment attempt count before handling conflicts
+                    attempt_count = self._increment_merge_attempt_count(pr)
+                    
                     # Add a comment to the PR about conflicts
                     try:
                         pr.create_issue_comment("@copilot please fix merge conflicts")
@@ -614,25 +738,41 @@ class JediMaster:
                     except Exception as e:
                         self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Has merge conflicts'})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Has merge conflicts', 'attempts': attempt_count})
                     continue
                 elif pr.mergeable is None:
                     self.logger.warning(f"PR #{pr.number} in {repo_name} has unknown mergeable state, skipping merge")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Unknown merge state'})
+                    # Increment attempt count before recording error
+                    attempt_count = self._increment_merge_attempt_count(pr)
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Unknown merge state', 'attempts': attempt_count})
                     continue
                 
                 # Final check to ensure PR is not a draft before merging
                 pr_draft_status = getattr(pr, 'draft', False)
                 if pr_draft_status:
                     self.logger.error(f"PR #{pr.number} is still in draft state after processing, skipping merge")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'PR still in draft state'})
+                    # Increment attempt count before recording error
+                    attempt_count = self._increment_merge_attempt_count(pr)
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'PR still in draft state', 'attempts': attempt_count})
                     continue
                 
-                self.logger.info(f"Attempting to merge PR #{pr.number} in {repo_name} (approved={approved}, mergeable={pr.mergeable}, draft={pr_draft_status})")
+                # Increment attempt count before trying to merge
+                attempt_count = self._increment_merge_attempt_count(pr)
+                
+                self.logger.info(f"Attempting to merge PR #{pr.number} in {repo_name} (approved={approved}, mergeable={pr.mergeable}, draft={pr_draft_status}, attempt={attempt_count})")
                 try:
                     merge_result = pr.merge(merge_method='squash', commit_message=f"Auto-merged by JediMaster: {pr.title}")
                     if merge_result.merged:
-                        self.logger.info(f"Successfully auto-merged PR #{pr.number} in {repo_name}")
+                        self.logger.info(f"Successfully auto-merged PR #{pr.number} in {repo_name} on attempt {attempt_count}")
+                        
+                        # Remove merge attempt labels since merge was successful
+                        try:
+                            attempt_labels = [label for label in pr.labels if label.name.startswith('merge-attempt-')]
+                            for label in attempt_labels:
+                                pr.remove_from_labels(label)
+                            self.logger.info(f"Removed merge attempt labels from successfully merged PR #{pr.number}")
+                        except Exception as e:
+                            self.logger.debug(f"Could not remove merge attempt labels from PR #{pr.number}: {e}")
                         
                         # Close linked issues after successful merge
                         try:
@@ -648,13 +788,13 @@ class JediMaster:
                         except Exception as e:
                             self.logger.error(f"Failed to delete branch for PR #{pr.number}: {e}")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merged'})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merged', 'attempts': attempt_count})
                     else:
-                        self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name}: {merge_result.message}")
+                        self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name} on attempt {attempt_count}: {merge_result.message}")
                         
                         # Add a comment about merge failure and reassign to Copilot
                         try:
-                            pr.create_issue_comment(f"Auto-merge failed: {merge_result.message}. Please investigate.")
+                            pr.create_issue_comment(f"Auto-merge failed (attempt {attempt_count}): {merge_result.message}. Please investigate.")
                             self.logger.info(f"Added merge failure comment to PR #{pr.number} in {repo_name}")
                         except Exception as e:
                             self.logger.error(f"Failed to comment on PR #{pr.number} about merge failure: {e}")
@@ -676,13 +816,13 @@ class JediMaster:
                         except Exception as e:
                             self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': merge_result.message})
+                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': merge_result.message, 'attempts': attempt_count})
                 except Exception as e:
-                    self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name}: {e}")
+                    self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name} on attempt {attempt_count}: {e}")
                     
                     # Add a comment about exception and reassign to Copilot
                     try:
-                        pr.create_issue_comment(f"Auto-merge exception: {str(e)}. Please investigate.")
+                        pr.create_issue_comment(f"Auto-merge exception (attempt {attempt_count}): {str(e)}. Please investigate.")
                         self.logger.info(f"Added merge exception comment to PR #{pr.number} in {repo_name}")
                     except Exception as comment_e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about merge exception: {comment_e}")
@@ -704,7 +844,7 @@ class JediMaster:
                     except Exception as assign_e:
                         self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': str(e)})
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': str(e), 'attempts': attempt_count})
         except Exception as e:
             self.logger.error(f"Error merging reviewed PRs in {repo_name}: {e}")
             results.append({'repo': repo_name, 'pr_number': 0, 'status': 'merge_error', 'error': str(e)})
@@ -1232,10 +1372,16 @@ def main():
                 for res in merge_results:
                     if res['status'] == 'merged':
                         pr_title = res.get('pr_title', 'Unknown Title')
-                        print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}")
+                        attempt_info = f" (attempt {res.get('attempts', '?')})" if res.get('attempts') else ""
+                        print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}{attempt_info}")
+                    elif res['status'] == 'max_retries_exceeded':
+                        pr_title = res.get('pr_title', 'Unknown Title')
+                        attempts = res.get('attempts', '?')
+                        print(f"  - Max retries exceeded for PR #{res['pr_number']}: {pr_title} in {repo_name} ({attempts} attempts)")
                     elif res['status'] == 'merge_error':
                         pr_title = res.get('pr_title', 'Unknown Title')
-                        print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}")
+                        attempt_info = f" (attempt {res.get('attempts', '?')})" if res.get('attempts') else ""
+                        print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}{attempt_info}")
 
         # Save and display results
         if args.save_report:

@@ -148,8 +148,17 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                     try:
                         merge_results = jedi.merge_reviewed_pull_requests(repo_full)
                         repo_block['merge'] = merge_results
-                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_results})
-                        logging.info(f"[AutomateRepos] Merge attempt results count={len(merge_results)} repo={repo_full}")
+                        
+                        # Create summary stats for merge results
+                        merge_stats = {
+                            'total_prs': len(merge_results),
+                            'merged': sum(1 for r in merge_results if r.get('status') == 'merged'),
+                            'merge_errors': sum(1 for r in merge_results if r.get('status') == 'merge_error'),
+                            'max_retries_exceeded': sum(1 for r in merge_results if r.get('status') == 'max_retries_exceeded')
+                        }
+                        
+                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_results, 'stats': merge_stats})
+                        logging.info(f"[AutomateRepos] Merge attempt results count={len(merge_results)} repo={repo_full} stats={merge_stats}")
                     except Exception as e:
                         logging.error(f"[AutomateRepos] Auto-merge failed for {repo_full}: {e}")
                         summary['errors'].append({'repo': repo_full, 'stage': 'auto_merge', 'error': str(e)})
