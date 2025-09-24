@@ -83,6 +83,7 @@ $autoMerge    = Get-Opt 'AUTO_MERGE' '1'
 $createEnv    = Get-Opt 'CREATE_ISSUES' '0'
 $createCount  = Get-Opt 'CREATE_ISSUES_COUNT' ''
 $useFile      = Get-Opt 'USE_FILE_FILTER' '0'
+$mergeRetries = Get-Opt 'MERGE_MAX_RETRIES' '3'
 
 $ScheduleCron = $cronFromEnv
 
@@ -99,6 +100,7 @@ $settings = @(
   $( if($createCount){ "CREATE_ISSUES_COUNT=$createCount" } )
   "USE_FILE_FILTER=$useFile"
   "SCHEDULE_CRON=$ScheduleCron"
+  "MERGE_MAX_RETRIES=$mergeRetries"
 )
 
 # Configure managed identity and role assignments
