@@ -235,6 +235,14 @@ class JediMaster:
             self.logger.error(f"Error assigning PR via GraphQL: {e}")
             return False
 
+    def _is_copilot_already_assigned_to_pr(self, pr) -> bool:
+        """Check if Copilot is already assigned to this PR."""
+        try:
+            return any('copilot' in (assignee.login or '').lower() for assignee in pr.assignees)
+        except Exception as e:
+            self.logger.error(f"Error checking PR assignees for PR #{getattr(pr, 'number', '?')}: {e}")
+            return False
+
     def _close_linked_issues(self, repo, pr_number: int, pr_title: str) -> List[int]:
         """Find and close issues linked to a PR using GraphQL, returning list of closed issue numbers."""
         closed_issues = []
@@ -721,22 +729,25 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     except Exception as e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about conflicts: {e}")
                     
-                    # Reassign to Copilot after adding comment about conflicts
-                    try:
-                        repo_parts = repo_name.split('/')
-                        repo_owner = repo_parts[0]
-                        repo_name_only = repo_parts[1]
-                        pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
-                        if pr_id and bot_id:
-                            success = self._assign_pr_via_graphql(pr_id, bot_id)
-                            if success:
-                                self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge conflicts")
+                    # Only reassign to Copilot if not already assigned to avoid interrupting ongoing work
+                    if not self._is_copilot_already_assigned_to_pr(pr):
+                        try:
+                            repo_parts = repo_name.split('/')
+                            repo_owner = repo_parts[0]
+                            repo_name_only = repo_parts[1]
+                            pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                            if pr_id and bot_id:
+                                success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                if success:
+                                    self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge conflicts")
+                                else:
+                                    self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge conflict")
                             else:
-                                self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge conflict")
-                        else:
-                            self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                                self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                        except Exception as e:
+                            self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                    else:
+                        self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                     
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Has merge conflicts', 'attempts': attempt_count})
                     continue
@@ -799,22 +810,25 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                         except Exception as e:
                             self.logger.error(f"Failed to comment on PR #{pr.number} about merge failure: {e}")
                         
-                        # Reassign to Copilot after merge failure
-                        try:
-                            repo_parts = repo_name.split('/')
-                            repo_owner = repo_parts[0]
-                            repo_name_only = repo_parts[1]
-                            pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
-                            if pr_id and bot_id:
-                                success = self._assign_pr_via_graphql(pr_id, bot_id)
-                                if success:
-                                    self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge failure")
+                        # Only reassign to Copilot if not already assigned to avoid interrupting ongoing work
+                        if not self._is_copilot_already_assigned_to_pr(pr):
+                            try:
+                                repo_parts = repo_name.split('/')
+                                repo_owner = repo_parts[0]
+                                repo_name_only = repo_parts[1]
+                                pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                                if pr_id and bot_id:
+                                    success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                    if success:
+                                        self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge failure")
+                                    else:
+                                        self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge failure")
                                 else:
-                                    self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge failure")
-                            else:
-                                self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
-                        except Exception as e:
-                            self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                                    self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                            except Exception as e:
+                                self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {e}")
+                        else:
+                            self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                         
                         results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': merge_result.message, 'attempts': attempt_count})
                 except Exception as e:
@@ -827,22 +841,25 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     except Exception as comment_e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about merge exception: {comment_e}")
                     
-                    # Reassign to Copilot after merge exception
-                    try:
-                        repo_parts = repo_name.split('/')
-                        repo_owner = repo_parts[0]
-                        repo_name_only = repo_parts[1]
-                        pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
-                        if pr_id and bot_id:
-                            success = self._assign_pr_via_graphql(pr_id, bot_id)
-                            if success:
-                                self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge exception")
+                    # Only reassign to Copilot if not already assigned to avoid interrupting ongoing work
+                    if not self._is_copilot_already_assigned_to_pr(pr):
+                        try:
+                            repo_parts = repo_name.split('/')
+                            repo_owner = repo_parts[0]
+                            repo_name_only = repo_parts[1]
+                            pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                            if pr_id and bot_id:
+                                success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                if success:
+                                    self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to merge exception")
+                                else:
+                                    self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge exception")
                             else:
-                                self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after merge exception")
-                        else:
-                            self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
-                    except Exception as assign_e:
-                        self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
+                                self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                        except Exception as assign_e:
+                            self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
+                    else:
+                        self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                     
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': str(e), 'attempts': attempt_count})
         except Exception as e:
