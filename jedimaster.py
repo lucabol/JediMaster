@@ -370,10 +370,40 @@ class JediMaster:
         except Exception:
             return False
 
-    def fetch_issues(self, repo_name: str):
-        """Fetch all open issues for a repository."""
+    def fetch_issues(self, repo_name: str, batch_size: int = 15):
+        """Fetch open issues that haven't been processed yet.
+        
+        Args:
+            repo_name: The repository name in format 'owner/repo'
+            batch_size: Maximum number of unprocessed issues to return (default 15)
+            
+        Returns:
+            List of unprocessed issues (limited by batch_size)
+        """
         repo = self.github.get_repo(repo_name)
-        return repo.get_issues(state='open')
+        all_issues = repo.get_issues(state='open')
+        
+        unprocessed_issues = []
+        processed_labels = {'copilot-candidate', 'no-github-copilot'}
+        
+        for issue in all_issues:
+            # Skip pull requests
+            if issue.pull_request:
+                continue
+                
+            # Check if already processed (has our labels)
+            issue_label_names = {label.name.lower() for label in issue.labels}
+            if issue_label_names.intersection(processed_labels):
+                continue  # Skip already processed issues
+                
+            unprocessed_issues.append(issue)
+            
+            # Stop when we have enough for this batch
+            if len(unprocessed_issues) >= batch_size:
+                break
+                
+        self.logger.info(f"Found {len(unprocessed_issues)} unprocessed issues (batch size: {batch_size})")
+        return unprocessed_issues
 
     def process_issue(self, issue, repo_name: str) -> IssueResult:
         """Process a single issue and return an IssueResult."""
@@ -591,13 +621,23 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
         except Exception as e:
             self.logger.error(f"Failed to mark PR #{pr.number} as max retries exceeded: {e}")
 
-    def merge_reviewed_pull_requests(self, repo_name: str):
-        """Merge PRs that are approved and have no conflicts with the base branch. If PR is a draft, mark as ready for review first."""
+    def merge_reviewed_pull_requests(self, repo_name: str, batch_size: int = 10):
+        """Merge PRs that are approved and have no conflicts with the base branch. If PR is a draft, mark as ready for review first.
+        
+        Args:
+            repo_name: The repository name in format 'owner/repo'
+            batch_size: Maximum number of PRs to process (default 10)
+        """
         results = []
         try:
             repo = self.github.get_repo(repo_name)
-            pulls = list(repo.get_pulls(state='open'))
-            self.logger.info(f"Found {len(pulls)} open PRs in {repo_name}")
+            all_pulls = list(repo.get_pulls(state='open'))
+            self.logger.info(f"Found {len(all_pulls)} open PRs in {repo_name}")
+            
+            # Limit to batch size
+            pulls = all_pulls[:batch_size]
+            if len(all_pulls) > batch_size:
+                self.logger.info(f"Processing first {batch_size} PRs (batch size limit)")
             
             for pr in pulls:
                 # Check if PR has already exceeded max retry attempts
@@ -867,13 +907,24 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
             results.append({'repo': repo_name, 'pr_number': 0, 'status': 'merge_error', 'error': str(e)})
         return results
 
-    def process_pull_requests(self, repo_name: str):
+    def process_pull_requests(self, repo_name: str, batch_size: int = 15):
+        """Process open pull requests with PRDeciderAgent.
+        
+        Args:
+            repo_name: The repository name in format 'owner/repo'
+            batch_size: Maximum number of PRs to process (default 15)
+        """
         results = []
+        processed_prs = []
         try:
             repo = self.github.get_repo(repo_name)
-            pulls = list(repo.get_pulls(state='open'))
-            self.logger.info(f"Fetched {len(pulls)} open PRs from {repo_name}")
-            for pr in pulls:
+            all_pulls = list(repo.get_pulls(state='open'))
+            self.logger.info(f"Found {len(all_pulls)} open PRs in {repo_name}")
+            
+            for pr in all_pulls:
+                # Stop when we have enough PRs to process
+                if len(processed_prs) >= batch_size:
+                    break
                 # Get detailed review state information using GraphQL
                 pr_data = self._get_pr_review_states(repo_name, pr.number)
                 
@@ -883,6 +934,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     continue
                 
                 self.logger.info(f"Processing PR #{pr.number} - needs review")
+                processed_prs.append(pr)  # Track that we're processing this PR
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
                     diff = pr.diff_url
