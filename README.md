@@ -308,7 +308,7 @@ Recommendations (Python Azure Functions best practices):
    # Required configuration
    GITHUB_TOKEN=your_token
    RESOURCE_GROUP=jedimaster-rg
-   FUNCTION_APP_NAME=JediMaster
+  FUNCTION_APP_NAME=JediMaster2
    AZURE_AI_FOUNDRY_ENDPOINT=https://your-resource.cognitiveservices.azure.com
    
    # Required for automation
