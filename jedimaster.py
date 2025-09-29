@@ -927,6 +927,12 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     break
                 # Get detailed review state information using GraphQL
                 pr_data = self._get_pr_review_states(repo_name, pr.number)
+
+                if not pr_data:
+                    error_msg = "Failed to retrieve PR review metadata"
+                    self.logger.error(f"{error_msg} for PR #{pr.number}")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    continue
                 
                 # Only process PRs that truly need review based on their current state
                 if not self._should_process_pr(pr_data):
@@ -937,22 +943,39 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 processed_prs.append(pr)  # Track that we're processing this PR
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
-                    diff = pr.diff_url
-                    diff_content = ''
-                    try:
-                        diff_resp = requests.get(diff)
-                        if diff_resp.status_code == 200:
-                            diff_content = diff_resp.text
-                    except Exception as e:
-                        self.logger.warning(f"Could not fetch diff for PR #{pr.number}: {e}")
-                    pr_text += f"Diff:\n{diff_content[:5000]}"
+                    diff_url = pr.diff_url
                 except Exception as e:
-                    self.logger.warning(f"Could not get diff for PR #{pr.number}: {e}")
+                    error_msg = f"Failed to access diff URL: {e}"
+                    self.logger.error(f"{error_msg} for PR #{pr.number}")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    continue
+
+                try:
+                    diff_headers = {
+                        "Accept": "application/vnd.github.v3.diff",
+                        "Authorization": f"token {self.github_token}"
+                    }
+                    diff_resp = requests.get(diff_url, headers=diff_headers, timeout=15)
+                    if diff_resp.status_code != 200:
+                        raise RuntimeError(f"GitHub returned status {diff_resp.status_code}")
+                    diff_content = diff_resp.text
+                except Exception as e:
+                    error_msg = f"Failed to fetch diff: {e}"
+                    self.logger.error(f"{error_msg} for PR #{pr.number}")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    continue
+
+                pr_text += f"Diff:\n{diff_content[:5000]}"
                 result = self.pr_decider.evaluate_pr(pr_text)
                 print(result)
                 
                 # Double-check review state before taking action to avoid conflicts
                 current_pr_data = self._get_pr_review_states(repo_name, pr.number)
+                if not current_pr_data:
+                    error_msg = "Failed to refresh PR review metadata"
+                    self.logger.error(f"{error_msg} for PR #{pr.number}")
+                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    continue
                 if not self._should_process_pr(current_pr_data):
                     self.logger.info(f"PR #{pr.number} state changed during processing, skipping action")
                     results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'skipped', 'reason': 'state_changed'})
@@ -1055,6 +1078,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 pullRequest(number: $number) {
                     id
                     isDraft
+                    reviewDecision
                     reviewRequests(first: 10) {
                         totalCount
                     }
@@ -1095,11 +1119,19 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
         
         # Check if PR is in draft state
         is_draft = pr_data.get('isDraft', False)
+        review_decision = pr_data.get('reviewDecision')
         
         # Check if there are pending review requests
         review_requests = pr_data.get('reviewRequests', {})
         has_pending_requests = review_requests.get('totalCount', 0) > 0
-        self.logger.debug(f"PR is draft: {is_draft}, has {review_requests.get('totalCount', 0)} pending review requests")
+        self.logger.debug(f"PR is draft: {is_draft}, reviewDecision: {review_decision}, pending review requests: {review_requests.get('totalCount', 0)}")
+        
+        if review_decision == 'CHANGES_REQUESTED':
+            self.logger.debug("Aggregate review decision is CHANGES_REQUESTED, skipping")
+            return False
+        if review_decision == 'APPROVED' and not has_pending_requests:
+            self.logger.debug("Aggregate review decision is APPROVED with no pending requests, skipping")
+            return False
         
         # For draft PRs, only process if they have review requests
         # This indicates the author wants review despite being in draft
@@ -1140,15 +1172,19 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
             elif state == 'APPROVED':
                 # Don't process already approved PRs (unless there are new review requests)
                 if not has_pending_requests:
-                    self.logger.debug(f"PR already APPROVED by {author} with no pending requests, skipping")
-                    return False
+                            self.logger.debug(f"PR already APPROVED by {author} with no pending requests, skipping")
+                            return False
         
         # Process if:
         # 1. There are pending review requests, OR
         # 2. All existing reviews are just COMMENTED/PENDING (no approval or changes requested)
-        should_process = has_pending_requests or any(
+                should_process = (
+                    has_pending_requests
+                    or review_decision == 'REVIEW_REQUIRED'
+                    or any(
             review.get('state') in ['COMMENTED', 'PENDING'] for review in latest_reviews.values()
-        )
+                    )
+                )
         self.logger.debug(f"Final decision to process PR: {should_process}")
         return should_process
 
