@@ -10,6 +10,7 @@ import re
 from typing import List, Dict, Any, Optional, Set
 from github import Github
 from azure_ai_foundry_utils import create_azure_ai_foundry_client, get_chat_client, get_embeddings_client
+from reporting import format_table
 
 
 class CreatorAgent:
@@ -38,6 +39,14 @@ class CreatorAgent:
             "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
             "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]}"
         )
+
+    def _shorten(self, text: Optional[str], limit: int = 80) -> str:
+        if not text:
+            return ""
+        cleaned = " ".join(text.split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 1] + "…"
 
     def _gather_repo_context(self, max_chars: int = 12000) -> str:
         """Gather as much repo context as possible (README, then all other files recursively) within max_chars."""
@@ -418,27 +427,87 @@ class CreatorAgent:
         suggested_issues = self.suggest_issues(max_issues=max_issues)
         if not suggested_issues:
             self.logger.warning("No issues suggested by LLM.")
+            print("\nISSUE CREATION SUMMARY")
+            summary_rows = [
+                ("Suggested", 0),
+                ("Existing open", len(existing_issues)),
+                ("Skipped (similar)", 0),
+                ("To create", 0),
+            ]
+            print(format_table(["Metric", "Count"], summary_rows))
+            print()
+            print(
+                format_table(
+                    ["Title", "Status", "Details"],
+                    [],
+                    empty_message="No issues created",
+                )
+            )
             return []
         
         # Check for similar issues
         unique_issues, similar_issues_info = self._check_for_similar_issues(suggested_issues, existing_issues)
         
-        # Print comparison information
-        print(f"Checked {len(suggested_issues)} suggested issues against {len(existing_issues)} existing open issues")
-        
-        # Print similarity information
-        if similar_issues_info:
-            print(f"\nSkipping {len(similar_issues_info)} similar issue(s):")
-            for info in similar_issues_info:
-                print(f"  - '{info['suggested_title']}' is too similar to existing issue #{info['existing_number']}: '{info['existing_title']}' (similarity: {info['similarity_score']:.3f})")
-                print(f"    Existing issue: {info['existing_url']} [{info['existing_state']}]")
-        
+        summary_rows = [
+            ("Suggested", len(suggested_issues)),
+            ("Existing open", len(existing_issues)),
+            ("Skipped (similar)", len(similar_issues_info)),
+            ("To create", len(unique_issues)),
+        ]
+        print("\nISSUE CREATION SUMMARY")
+        print(format_table(["Metric", "Count"], summary_rows))
+
+        similar_rows = [
+            [
+                self._shorten(info['suggested_title'], 50),
+                f"#{info['existing_number']}",
+                f"{info['similarity_score']:.2f}",
+                self._shorten(info['existing_title'], 40),
+            ]
+            for info in similar_issues_info
+        ]
+        print()
+        print(
+            format_table(
+                ["Suggested", "Existing", "Similarity", "Existing Title"],
+                similar_rows,
+                empty_message="No similar issues detected",
+            )
+        )
+
         if not unique_issues:
-            print("\nAll suggested issues are too similar to existing ones. No new issues will be created.")
+            print()
+            print(
+                format_table(
+                    ["Title", "Status", "Details"],
+                    [],
+                    empty_message="No issues created",
+                )
+            )
             return []
-        
-        if len(unique_issues) < len(suggested_issues):
-            print(f"\nCreating {len(unique_issues)} unique issue(s) out of {len(suggested_issues)} suggested:")
-        
-        # Create the unique issues
-        return self.open_issues(unique_issues)
+
+        creation_results = self.open_issues(unique_issues)
+
+        status_map = {
+            'created': 'created ✅',
+            'error': 'error ⚠️',
+        }
+        detail_rows = [
+            [
+                self._shorten(item['title'], 90),
+                status_map.get(item.get('status', ''), item.get('status', 'unknown')), 
+                self._shorten(item.get('url') or item.get('error') or ''),
+            ]
+            for item in creation_results
+        ]
+
+        print()
+        print(
+            format_table(
+                ["Title", "Status", "Details"],
+                detail_rows,
+                empty_message="No issues created",
+            )
+        )
+
+        return creation_results

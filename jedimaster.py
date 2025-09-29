@@ -7,6 +7,7 @@ based on LLM evaluation of issue suitability.
 import os
 import json
 import logging
+from collections import Counter
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
@@ -19,6 +20,7 @@ from dotenv import load_dotenv
 
 from decider import DeciderAgent, PRDeciderAgent
 from creator import CreatorAgent
+from reporting import format_table
 
 
 
@@ -37,6 +39,18 @@ class IssueResult:
     reasoning: Optional[str] = None
     error_message: Optional[str] = None
 
+
+@dataclass
+class PRRunResult:
+    """Represents the result of processing or merging a pull request."""
+    repo: str
+    pr_number: int
+    title: str
+    status: str
+    details: Optional[str] = None
+    attempts: Optional[int] = None
+
+
 @dataclass
 class ProcessingReport:
     """Summary report of the entire processing run."""
@@ -48,6 +62,7 @@ class ProcessingReport:
     errors: int = 0
     results: List[IssueResult] = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    pr_results: List[PRRunResult] = field(default_factory=list)
 
 
 
@@ -370,6 +385,38 @@ class JediMaster:
         except Exception:
             return False
 
+    def _shorten_text(self, text: Optional[str], limit: int = 80) -> str:
+        if not text:
+            return ""
+        cleaned = " ".join(text.strip().split())
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 1] + "…"
+
+    def _friendly_issue_status(self, status: str) -> str:
+        mapping = {
+            'assigned': 'assigned ✅',
+            'labeled': 'labeled 🏷️',
+            'not_assigned': 'not assigned',
+            'already_assigned': 'already assigned 🔁',
+            'error': 'error ⚠️',
+        }
+        return mapping.get(status, status.replace('_', ' '))
+
+    def _friendly_pr_status(self, status: str) -> str:
+        mapping = {
+            'approved': 'approved ✅',
+            'changes_requested': 'changes requested ✏️',
+            'skipped': 'skipped',
+            'error': 'error ⚠️',
+            'unknown': 'unknown',
+            'merged': 'merged ✅',
+            'merge_error': 'merge error ⚠️',
+            'max_retries_exceeded': 'max retries 🚫',
+            'state_changed': 'state changed',
+        }
+        return mapping.get(status, status.replace('_', ' '))
+
     def fetch_issues(self, repo_name: str, batch_size: int = 15):
         """Fetch open issues that haven't been processed yet.
         
@@ -628,7 +675,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
             repo_name: The repository name in format 'owner/repo'
             batch_size: Maximum number of PRs to process (default 10)
         """
-        results = []
+        results: List[PRRunResult] = []
         try:
             repo = self.github.get_repo(repo_name)
             all_pulls = list(repo.get_pulls(state='open'))
@@ -643,7 +690,15 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 # Check if PR has already exceeded max retry attempts
                 if any(label.name == "merge-failed-max-retries" for label in pr.labels):
                     self.logger.info(f"PR #{pr.number} in {repo_name} has exceeded max merge retries, skipping")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'max_retries_exceeded'})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='max_retries_exceeded',
+                            details='Already flagged as max retries',
+                        )
+                    )
                     continue
                 
                 # Check current attempt count
@@ -651,7 +706,16 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 if current_attempts >= self.merge_max_retries:
                     self.logger.warning(f"PR #{pr.number} in {repo_name} has reached max merge attempts ({current_attempts}), marking as failed")
                     self._mark_pr_max_retries_exceeded(pr)
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'max_retries_exceeded', 'attempts': current_attempts})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='max_retries_exceeded',
+                            attempts=current_attempts,
+                            details='Exceeded retry budget',
+                        )
+                    )
                     continue
                 
                 self.logger.info(f"Checking PR #{pr.number}: '{pr.title}' (draft: {getattr(pr, 'draft', 'unknown')}, mergeable: {pr.mergeable}, attempts: {current_attempts})")
@@ -721,7 +785,15 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                         query_result = self._graphql_request(pr_query, query_vars)
                         if "errors" in query_result:
                             self.logger.error(f"GraphQL query errors: {query_result['errors']}")
-                            results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to get PR node ID: {query_result["errors"]}'})
+                            results.append(
+                                PRRunResult(
+                                    repo=repo_name,
+                                    pr_number=pr.number,
+                                    title=pr.title,
+                                    status='merge_error',
+                                    details=f"GraphQL query failed: {self._shorten_text(str(query_result['errors']))}",
+                                )
+                            )
                             continue
                             
                         pr_node_id = query_result["data"]["repository"]["pullRequest"]["id"]
@@ -736,7 +808,15 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                             
                             if "errors" in mutation_result:
                                 self.logger.error(f"GraphQL mutation errors: {mutation_result['errors']}")
-                                results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to mark as ready: {mutation_result["errors"]}'})
+                                results.append(
+                                    PRRunResult(
+                                        repo=repo_name,
+                                        pr_number=pr.number,
+                                        title=pr.title,
+                                        status='merge_error',
+                                        details=f"GraphQL mutation failed: {self._shorten_text(str(mutation_result['errors']))}",
+                                    )
+                                )
                                 continue
                             
                             # Check the result
@@ -753,7 +833,15 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                             
                     except Exception as e:
                         self.logger.error(f"Failed to mark PR #{pr.number} as ready for review: {e}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': f'Failed to mark as ready for review: {e}'})
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='merge_error',
+                                details=f'Failed to ready draft: {self._shorten_text(str(e))}',
+                            )
+                        )
                         continue
                 
                 # Check for mergeability (no conflicts)
@@ -789,13 +877,31 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     else:
                         self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Has merge conflicts', 'attempts': attempt_count})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='merge_error',
+                            details='Has merge conflicts',
+                            attempts=attempt_count,
+                        )
+                    )
                     continue
                 elif pr.mergeable is None:
                     self.logger.warning(f"PR #{pr.number} in {repo_name} has unknown mergeable state, skipping merge")
                     # Increment attempt count before recording error
                     attempt_count = self._increment_merge_attempt_count(pr)
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'Unknown merge state', 'attempts': attempt_count})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='merge_error',
+                            details='Unknown mergeability',
+                            attempts=attempt_count,
+                        )
+                    )
                     continue
                 
                 # Final check to ensure PR is not a draft before merging
@@ -804,7 +910,16 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     self.logger.error(f"PR #{pr.number} is still in draft state after processing, skipping merge")
                     # Increment attempt count before recording error
                     attempt_count = self._increment_merge_attempt_count(pr)
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': 'PR still in draft state', 'attempts': attempt_count})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='merge_error',
+                            details='PR still in draft state',
+                            attempts=attempt_count,
+                        )
+                    )
                     continue
                 
                 # Increment attempt count before trying to merge
@@ -839,7 +954,16 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                         except Exception as e:
                             self.logger.error(f"Failed to delete branch for PR #{pr.number}: {e}")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merged', 'attempts': attempt_count})
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='merged',
+                                details='Auto-merged successfully',
+                                attempts=attempt_count,
+                            )
+                        )
                     else:
                         self.logger.error(f"Merge failed for PR #{pr.number} in {repo_name} on attempt {attempt_count}: {merge_result.message}")
                         
@@ -870,7 +994,16 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                         else:
                             self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                         
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': merge_result.message, 'attempts': attempt_count})
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='merge_error',
+                                details=f"Merge failed: {self._shorten_text(merge_result.message)}",
+                                attempts=attempt_count,
+                            )
+                        )
                 except Exception as e:
                     self.logger.error(f"Failed to auto-merge PR #{pr.number} in {repo_name} on attempt {attempt_count}: {e}")
                     
@@ -901,10 +1034,27 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     else:
                         self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning to avoid interrupting ongoing work")
                     
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'pr_title': pr.title, 'status': 'merge_error', 'error': str(e), 'attempts': attempt_count})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='merge_error',
+                            details=f"Merge exception: {self._shorten_text(str(e))}",
+                            attempts=attempt_count,
+                        )
+                    )
         except Exception as e:
             self.logger.error(f"Error merging reviewed PRs in {repo_name}: {e}")
-            results.append({'repo': repo_name, 'pr_number': 0, 'status': 'merge_error', 'error': str(e)})
+            results.append(
+                PRRunResult(
+                    repo=repo_name,
+                    pr_number=0,
+                    title='Merge processing error',
+                    status='merge_error',
+                    details=self._shorten_text(str(e)),
+                )
+            )
         return results
 
     def process_pull_requests(self, repo_name: str, batch_size: int = 15):
@@ -914,46 +1064,62 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
             repo_name: The repository name in format 'owner/repo'
             batch_size: Maximum number of PRs to process (default 15)
         """
-        results = []
+        results: List[PRRunResult] = []
         processed_prs = []
         try:
             repo = self.github.get_repo(repo_name)
             all_pulls = list(repo.get_pulls(state='open'))
             self.logger.info(f"Found {len(all_pulls)} open PRs in {repo_name}")
-            
+
             for pr in all_pulls:
-                # Stop when we have enough PRs to process
                 if len(processed_prs) >= batch_size:
                     break
-                # Get detailed review state information using GraphQL
-                pr_data = self._get_pr_review_states(repo_name, pr.number)
 
+                pr_data = self._get_pr_review_states(repo_name, pr.number)
                 if not pr_data:
                     error_msg = "Failed to retrieve PR review metadata"
                     self.logger.error(f"{error_msg} for PR #{pr.number}")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details=error_msg,
+                        )
+                    )
                     continue
-                
-                # Only process PRs that truly need review based on their current state
+
                 if not self._should_process_pr(pr_data):
-                    self.logger.info(f"Skipping PR #{pr.number} - not waiting for review or already has decision")
+                    self.logger.info(
+                        f"Skipping PR #{pr.number} - not waiting for review or already decided"
+                    )
                     continue
-                
+
                 self.logger.info(f"Processing PR #{pr.number} - needs review")
-                processed_prs.append(pr)  # Track that we're processing this PR
+                processed_prs.append(pr)
+
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
                     diff_url = pr.diff_url
                 except Exception as e:
                     error_msg = f"Failed to access diff URL: {e}"
                     self.logger.error(f"{error_msg} for PR #{pr.number}")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details=error_msg,
+                        )
+                    )
                     continue
 
                 try:
                     diff_headers = {
                         "Accept": "application/vnd.github.v3.diff",
-                        "Authorization": f"token {self.github_token}"
+                        "Authorization": f"token {self.github_token}",
                     }
                     diff_resp = requests.get(diff_url, headers=diff_headers, timeout=15)
                     if diff_resp.status_code != 200:
@@ -962,53 +1128,102 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 except Exception as e:
                     error_msg = f"Failed to fetch diff: {e}"
                     self.logger.error(f"{error_msg} for PR #{pr.number}")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details=error_msg,
+                        )
+                    )
                     continue
 
                 pr_text += f"Diff:\n{diff_content[:5000]}"
-                result = self.pr_decider.evaluate_pr(pr_text)
-                print(result)
-                
-                # Double-check review state before taking action to avoid conflicts
+                agent_result = self.pr_decider.evaluate_pr(pr_text)
+
                 current_pr_data = self._get_pr_review_states(repo_name, pr.number)
                 if not current_pr_data:
                     error_msg = "Failed to refresh PR review metadata"
                     self.logger.error(f"{error_msg} for PR #{pr.number}")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': error_msg})
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details=error_msg,
+                        )
+                    )
                     continue
+
                 if not self._should_process_pr(current_pr_data):
-                    self.logger.info(f"PR #{pr.number} state changed during processing, skipping action")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'skipped', 'reason': 'state_changed'})
+                    self.logger.info(
+                        f"PR #{pr.number} state changed during processing, skipping action"
+                    )
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='state_changed',
+                            details='State changed during review',
+                        )
+                    )
                     continue
-                
-                if 'comment' in result:
+
+                if 'comment' in agent_result:
+                    comment_body = f"@copilot {agent_result['comment']}"
                     try:
-                        # Submit a CHANGES_REQUESTED review with the comment instead of just commenting
-                        # Prepend @copilot to the comment so it gets assigned to copilot again
-                        comment_body = f"@copilot {result['comment']}"
                         pr.create_review(event='REQUEST_CHANGES', body=comment_body)
                         self.logger.info(f"Requested changes on PR #{pr.number} in {repo_name}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'changes_requested', 'comment': comment_body})
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='changes_requested',
+                                details=self._shorten_text(comment_body),
+                            )
+                        )
                     except Exception as e:
-                        self.logger.error(f"Failed to request changes on PR #{pr.number}: {e}")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
-                elif result.get('decision') == 'accept':
-                    # Check if PR is already approved by someone else
+                        error_msg = str(e)
+                        self.logger.error(f"Failed to request changes on PR #{pr.number}: {error_msg}")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='error',
+                                details=error_msg,
+                            )
+                        )
+                elif agent_result.get('decision') == 'accept':
                     reviews = current_pr_data.get('reviews', {}).get('nodes', [])
                     already_approved = any(review.get('state') == 'APPROVED' for review in reviews)
                     is_draft = current_pr_data.get('isDraft', False)
-                    
+
                     if already_approved:
-                        self.logger.info(f"PR #{pr.number} already has approval, skipping duplicate approval")
-                        results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'skipped', 'reason': 'already_approved'})
+                        self.logger.info(
+                            f"PR #{pr.number} already has approval, skipping duplicate approval"
+                        )
+                        results.append(
+                            PRRunResult(
+                                repo=repo_name,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='skipped',
+                                details='Already approved',
+                            )
+                        )
                     else:
                         self.logger.info(f"PR #{pr.number} in {repo_name} can be accepted as-is.")
                         try:
-                            # If it's a draft PR, mark as ready for review first
                             if is_draft:
-                                self.logger.info(f"PR #{pr.number} is a draft, marking as ready for review before approval")
+                                self.logger.info(
+                                    f"PR #{pr.number} is a draft, marking as ready for review"
+                                )
                                 try:
-                                    # Use the existing GraphQL mutation from merge_reviewed_pull_requests
                                     mutation = """
                                     mutation($pullRequestId: ID!) {
                                       markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
@@ -1023,27 +1238,78 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                                         mutation_vars = {"pullRequestId": pr_id}
                                         mutation_result = self._graphql_request(mutation, mutation_vars)
                                         if 'errors' in mutation_result:
-                                            self.logger.error(f"GraphQL mutation errors: {mutation_result['errors']}")
+                                            self.logger.error(
+                                                f"GraphQL mutation errors: {mutation_result['errors']}"
+                                            )
                                         else:
-                                            self.logger.info(f"Successfully marked draft PR #{pr.number} as ready for review")
+                                            self.logger.info(
+                                                f"Successfully marked draft PR #{pr.number} as ready for review"
+                                            )
                                     else:
-                                        self.logger.warning(f"Could not get PR ID for draft PR #{pr.number}")
+                                        self.logger.warning(
+                                            f"Could not get PR ID for draft PR #{pr.number}"
+                                        )
                                 except Exception as e:
-                                    self.logger.error(f"Failed to mark draft PR #{pr.number} as ready for review: {e}")
-                                    # Continue with approval anyway
-                            
-                            pr.create_review(event='APPROVE', body='Automatically approved by JediMaster.')
+                                    self.logger.error(
+                                        f"Failed to mark draft PR #{pr.number} as ready for review: {e}"
+                                    )
+
+                            pr.create_review(
+                                event='APPROVE',
+                                body='Automatically approved by JediMaster.',
+                            )
                             self.logger.info(f"Approved PR #{pr.number} in {repo_name}.")
-                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'approved', 'was_draft': is_draft})
+                            details = 'Auto-approved'
+                            if is_draft:
+                                details += ' (draft readied)'
+                            results.append(
+                                PRRunResult(
+                                    repo=repo_name,
+                                    pr_number=pr.number,
+                                    title=pr.title,
+                                    status='approved',
+                                    details=details,
+                                )
+                            )
                         except Exception as e:
-                            self.logger.error(f"Failed to submit review for PR #{pr.number}: {e}")
-                            results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'error', 'error': str(e)})
+                            error_msg = str(e)
+                            self.logger.error(
+                                f"Failed to submit review for PR #{pr.number}: {error_msg}"
+                            )
+                            results.append(
+                                PRRunResult(
+                                    repo=repo_name,
+                                    pr_number=pr.number,
+                                    title=pr.title,
+                                    status='error',
+                                    details=error_msg,
+                                )
+                            )
                 else:
-                    self.logger.warning(f"Unexpected PRDeciderAgent result for PR #{pr.number}: {result}")
-                    results.append({'repo': repo_name, 'pr_number': pr.number, 'status': 'unknown', 'result': result})
+                    self.logger.warning(
+                        f"Unexpected PRDeciderAgent result for PR #{pr.number}: {agent_result}"
+                    )
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='unknown',
+                            details=self._shorten_text(str(agent_result)),
+                        )
+                    )
         except Exception as e:
-            self.logger.error(f"Error processing PRs in {repo_name}: {e}")
-            results.append({'repo': repo_name, 'pr_number': 0, 'status': 'error', 'error': str(e)})
+            error_msg = str(e)
+            self.logger.error(f"Error processing PRs in {repo_name}: {error_msg}")
+            results.append(
+                PRRunResult(
+                    repo=repo_name,
+                    pr_number=0,
+                    title='Processing error',
+                    status='error',
+                    details=error_msg,
+                )
+            )
         return results
 
     def _setup_logger(self) -> logging.Logger:
@@ -1281,10 +1547,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                 errors=0,
                 results=[]  # No issue results
             )
-            if pr_results:
-                print("\nPULL REQUEST PROCESSING RESULTS:")
-                for prr in pr_results:
-                    print(prr)
+            report.pr_results = pr_results
         else:
             # When processing issues, create standard issue report
             assigned_count = sum(1 for r in all_results if r.status == 'assigned')
@@ -1315,41 +1578,117 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
         self.logger.info(f"Report saved to {out_filename}")
         return out_filename
 
-    def print_summary(self, report: ProcessingReport):
-        print("\n" + "="*60)
-        print("JEDIMASTER PROCESSING SUMMARY")
-        print("="*60)
-        print(f"Timestamp: {report.timestamp}")
-        print(f"Total Issues Processed: {report.total_issues}")
-        print(f"Assigned to Copilot: {report.assigned}")
-        print(f"Labeled for Copilot: {report.labeled}")
-        print(f"Not Assigned: {report.not_assigned}")
-        print(f"Already Assigned: {report.already_assigned}")
-        print(f"Errors: {report.errors}")
-        print("="*60)
-        if report.assigned > 0:
-            print("\nISSUES ASSIGNED TO COPILOT:")
-            for result in report.results:
-                if result.status == 'assigned':
-                    print(f"  - {result.repo}#{result.issue_number}: {result.title}")
-                    print(f"    URL: {result.url}")
-                    if result.reasoning:
-                        print(f"    Reasoning: {result.reasoning}")
-                    print()
-        if report.labeled > 0:
-            print("\nISSUES LABELED FOR COPILOT:")
-            for result in report.results:
-                if result.status == 'labeled':
-                    print(f"  • {result.repo}#{result.issue_number}: {result.title}")
-                    print(f"    URL: {result.url}")
-                    if result.reasoning:
-                        print(f"    Reasoning: {result.reasoning}")
-                    print()
-        if report.errors > 0:
-            print("\nERRORS ENCOUNTERED:")
-            for result in report.results:
-                if result.status == 'error':
-                    print(f"  • {result.repo}#{result.issue_number}: {result.error_message}")
+    def print_summary(
+        self,
+        report: ProcessingReport,
+        context: str = "issues",
+        pr_results: Optional[List[PRRunResult]] = None,
+    ):
+        print("\nJEDIMASTER PROCESSING SUMMARY")
+        summary_rows = [("Timestamp", report.timestamp)]
+
+        if context == "prs":
+            results = pr_results if pr_results is not None else report.pr_results
+            summary_rows.append(("Mode", "PR review"))
+            summary_rows.append(("Pull requests reviewed", len(results)))
+            status_counts = Counter(r.status for r in results)
+            ordered_statuses = [
+                "changes_requested",
+                "approved",
+                "skipped",
+                "state_changed",
+                "error",
+                "unknown",
+            ]
+            for status in ordered_statuses:
+                count = status_counts.get(status, 0)
+                if count:
+                    summary_rows.append((self._friendly_pr_status(status), count))
+            for status, count in status_counts.items():
+                if status not in ordered_statuses and count:
+                    summary_rows.append((self._friendly_pr_status(status), count))
+            print(format_table(["Metric", "Value"], summary_rows))
+            if not results:
+                print("\nNo pull requests met the criteria for review.")
+            return
+
+        if context == "merge":
+            results = pr_results if pr_results is not None else report.pr_results
+            summary_rows.append(("Mode", "Auto-merge"))
+            summary_rows.append(("Pull requests evaluated", len(results)))
+            status_counts = Counter(r.status for r in results)
+            ordered_statuses = [
+                "merged",
+                "merge_error",
+                "max_retries_exceeded",
+                "skipped",
+                "error",
+            ]
+            for status in ordered_statuses:
+                count = status_counts.get(status, 0)
+                if count:
+                    summary_rows.append((self._friendly_pr_status(status), count))
+            for status, count in status_counts.items():
+                if status not in ordered_statuses and count:
+                    summary_rows.append((self._friendly_pr_status(status), count))
+            print(format_table(["Metric", "Value"], summary_rows))
+            if not results:
+                print("\nNo reviewed pull requests were eligible for auto-merge.")
+            return
+
+        summary_rows.extend([
+            ("Total Issues", report.total_issues),
+            ("Assigned", report.assigned),
+            ("Labeled", report.labeled),
+            ("Not Assigned", report.not_assigned),
+            ("Already Assigned", report.already_assigned),
+            ("Errors", report.errors),
+        ])
+        print(format_table(["Metric", "Value"], summary_rows))
+
+        detail_rows = []
+        for result in report.results:
+            detail_rows.append([
+                result.repo,
+                f"#{result.issue_number}",
+                self._friendly_issue_status(result.status),
+                self._shorten_text(result.reasoning or result.error_message or ""),
+            ])
+
+        print()
+        print(
+            format_table(
+                ["Repo", "Issue", "Status", "Details"],
+                detail_rows,
+                empty_message="No issues processed",
+            )
+        )
+
+    def print_pr_results(self, heading: str, pr_results: List[PRRunResult]):
+        print(f"\n{heading}")
+        rows = []
+        for result in pr_results:
+            details = result.details or ""
+            if result.attempts is not None:
+                attempt_text = f"attempt {result.attempts}"
+                details = f"{details} ({attempt_text})" if details else attempt_text
+            rows.append(
+                [
+                    result.repo,
+                    f"#{result.pr_number}",
+                    self._shorten_text(result.title, 60),
+                    self._friendly_pr_status(result.status),
+                    self._shorten_text(details),
+                ]
+            )
+
+        print(
+            format_table(
+                ["Repo", "PR", "Title", "Status", "Details"],
+                rows,
+                empty_message="No pull requests",
+            )
+        )
 
 
 
@@ -1440,14 +1779,7 @@ def main():
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
                 creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
-                results = creator.create_issues()
-                if not results:
-                    print("No issues suggested by LLM.")
-                for res in results:
-                    if res.get('status') == 'created':
-                        print(f"  - Created: {res['title']} -> {res['url']}")
-                    else:
-                        print(f"  - Failed: {res['title']} ({res.get('error', 'Unknown error')})")
+                creator.create_issues()
             return 0
 
         jedimaster = JediMaster(
@@ -1469,24 +1801,12 @@ def main():
             report = jedimaster.process_repositories(args.repositories)
             repo_names = args.repositories
 
-        # Auto-merge reviewed PRs if requested
+        auto_merge_results: List[PRRunResult] = []
         if args.auto_merge_reviewed:
             print("\nChecking for reviewed PRs to auto-merge...")
             for repo_name in repo_names:
-                merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
-                for res in merge_results:
-                    if res['status'] == 'merged':
-                        pr_title = res.get('pr_title', 'Unknown Title')
-                        attempt_info = f" (attempt {res.get('attempts', '?')})" if res.get('attempts') else ""
-                        print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}{attempt_info}")
-                    elif res['status'] == 'max_retries_exceeded':
-                        pr_title = res.get('pr_title', 'Unknown Title')
-                        attempts = res.get('attempts', '?')
-                        print(f"  - Max retries exceeded for PR #{res['pr_number']}: {pr_title} in {repo_name} ({attempts} attempts)")
-                    elif res['status'] == 'merge_error':
-                        pr_title = res.get('pr_title', 'Unknown Title')
-                        attempt_info = f" (attempt {res.get('attempts', '?')})" if res.get('attempts') else ""
-                        print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}{attempt_info}")
+                auto_merge_results.extend(jedimaster.merge_reviewed_pull_requests(repo_name))
+            jedimaster.print_pr_results("AUTO-MERGE RESULTS", auto_merge_results)
 
         # Save and display results
         if args.save_report:
@@ -1494,7 +1814,17 @@ def main():
             print(f"\nDetailed report saved to: {filename}")
         else:
             print("\nReport not saved (use --save-report to save to file)")
-        jedimaster.print_summary(report)
+        summary_context = "issues"
+        summary_pr_results: Optional[List[PRRunResult]] = None
+        if args.process_prs:
+            summary_context = "prs"
+            summary_pr_results = report.pr_results
+        elif args.auto_merge_reviewed:
+            summary_context = "merge"
+            summary_pr_results = auto_merge_results
+        jedimaster.print_summary(report, context=summary_context, pr_results=summary_pr_results)
+        if args.process_prs:
+            jedimaster.print_pr_results("PULL REQUEST PROCESSING RESULTS", report.pr_results)
         return 0
 
     except Exception as e:

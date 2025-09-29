@@ -294,12 +294,7 @@ def main():
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
             creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name)
-            results = creator.create_issues()
-            for res in results:
-                if res.get('status') == 'created':
-                    print(f"  - Created: {res['title']} -> {res['url']}")
-                else:
-                    print(f"  - Failed: {res['title']} ({res.get('error', 'Unknown error')})")
+            creator.create_issues()
         return
 
     # Initialize JediMaster
@@ -353,15 +348,12 @@ def main():
         print(f"Checking {len(repo_names)} repositories for auto-merge candidates...")
         
         # Only do auto-merge, no issue processing
+        all_merge_results = []
         for repo_name in repo_names:
             merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
-            for res in merge_results:
-                if res['status'] == 'merged':
-                    pr_title = res.get('pr_title', 'Unknown Title')
-                    print(f"  - Merged PR #{res['pr_number']}: {pr_title} in {repo_name}")
-                elif res['status'] == 'merge_error':
-                    pr_title = res.get('pr_title', 'Unknown Title')
-                    print(f"  - Failed to merge PR #{res['pr_number']}: {pr_title} in {repo_name}: {res['error']}")
+            all_merge_results.extend(merge_results)
+
+        jedimaster.print_pr_results("AUTO-MERGE RESULTS", all_merge_results)
         
         print(f"\nAuto-merge complete.")
         return
@@ -386,14 +378,11 @@ def main():
         print(f"\nReport not saved (use --save-report to save to file)")
 
     # Print summary
-    jedimaster.print_summary(report)
+    summary_context = "prs" if args.process_prs else "issues"
+    jedimaster.print_summary(report, context=summary_context)
 
-    # Example of accessing individual results
-    print(f"\nDetailed results:")
-    for result in report.results:
-        print(f"  {result.repo}#{result.issue_number}: {result.status}")
-        if result.reasoning:
-            print(f"    Reasoning: {result.reasoning[:100]}...")
+    if args.process_prs:
+        jedimaster.print_pr_results("PULL REQUEST PROCESSING RESULTS", report.pr_results)
 
 if __name__ == '__main__':
     main()
