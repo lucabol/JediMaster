@@ -1101,30 +1101,42 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
 
                 pr_text = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
                 try:
-                    diff_url = pr.diff_url
-                except Exception as e:
-                    error_msg = f"Failed to access diff URL: {e}"
-                    self.logger.error(f"{error_msg} for PR #{pr.number}")
-                    results.append(
-                        PRRunResult(
-                            repo=repo_name,
-                            pr_number=pr.number,
-                            title=pr.title,
-                            status='error',
-                            details=error_msg,
-                        )
-                    )
-                    continue
-
-                try:
-                    diff_headers = {
-                        "Accept": "application/vnd.github.v3.diff",
-                        "Authorization": f"token {self.github_token}",
-                    }
-                    diff_resp = requests.get(diff_url, headers=diff_headers, timeout=15)
-                    if diff_resp.status_code != 200:
-                        raise RuntimeError(f"GitHub returned status {diff_resp.status_code}")
-                    diff_content = diff_resp.text
+                    # Use PyGithub's built-in diff access instead of manual requests
+                    # This automatically handles authentication and private repos
+                    diff_content = ""
+                    
+                    # Get the files changed in the PR
+                    try:
+                        files = pr.get_files()
+                        for file in files:
+                            if hasattr(file, 'patch') and file.patch:
+                                diff_content += f"\n--- {file.filename} ---\n"
+                                diff_content += file.patch + "\n"
+                        
+                        # If no patches found, fall back to manual diff fetch
+                        if not diff_content.strip():
+                            raise RuntimeError("No file patches available, falling back to manual fetch")
+                            
+                    except Exception as file_e:
+                        self.logger.warning(f"Failed to get files for PR #{pr.number}, trying manual diff fetch: {file_e}")
+                        
+                        # Fallback to manual diff URL fetch
+                        diff_url = pr.diff_url
+                        diff_headers = {
+                            "Accept": "application/vnd.github.v3.diff",
+                            "Authorization": f"Bearer {self.github_token}",
+                            "X-GitHub-Api-Version": "2022-11-28"
+                        }
+                        diff_resp = requests.get(diff_url, headers=diff_headers, timeout=15)
+                        if diff_resp.status_code == 401:
+                            raise RuntimeError(f"Authentication failed (401). Check your GitHub token permissions for private repositories.")
+                        elif diff_resp.status_code == 403:
+                            raise RuntimeError(f"Access forbidden (403). Your token may lack 'repo' scope for private repositories.")
+                        elif diff_resp.status_code == 404:
+                            raise RuntimeError(f"PR not found (404). Repository may be private and token lacks access.")
+                        elif diff_resp.status_code != 200:
+                            raise RuntimeError(f"GitHub returned status {diff_resp.status_code}: {diff_resp.text[:200]}")
+                        diff_content = diff_resp.text
                 except Exception as e:
                     error_msg = f"Failed to fetch diff: {e}"
                     self.logger.error(f"{error_msg} for PR #{pr.number}")

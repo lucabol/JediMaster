@@ -22,18 +22,42 @@ $ErrorActionPreference = "Stop"
 
 # Load .env
 $envPath = Join-Path $PSScriptRoot '.env'
-if (-not (Test-Path $envPath)) { throw ".env not found at $envPath" }
-$dotenv = Get-Content $envPath | Where-Object { $_ -and ($_ -notmatch '^#') -and ($_ -match '=') }
-$envMap = @{}
-foreach($line in $dotenv){ 
-    $k,$v = $line -split '=',2
-    # Remove inline comments (anything after # with optional whitespace)
-    $v = $v -replace '\s*#.*$', ''
-    $envMap[$k.Trim()] = $v.Trim() 
+if (-not (Test-Path $envPath)) { 
+    Write-Host "❌ DEPLOYMENT FAILED: .env file not found at $envPath" -ForegroundColor Red
+    Write-Host "Please create a .env file with required configuration." -ForegroundColor Yellow
+    throw ".env not found at $envPath" 
+}
+
+try {
+    $dotenv = Get-Content $envPath | Where-Object { $_ -and ($_ -notmatch '^#') -and ($_ -match '=') }
+    $envMap = @{}
+    foreach($line in $dotenv){ 
+        $k,$v = $line -split '=',2
+        # Remove inline comments (anything after # with optional whitespace)
+        $v = $v -replace '\s*#.*$', ''
+        $envMap[$k.Trim()] = $v.Trim() 
+    }
+} catch {
+    Write-Host "❌ DEPLOYMENT FAILED: Error reading .env file" -ForegroundColor Red
+    Write-Host "Error details: $_" -ForegroundColor Red
+    throw "Failed to load .env file: $_"
 }
 
 # Helper functions
-function Require($k){ if(-not $envMap.ContainsKey($k)){ throw "Missing $k in .env" }; return $envMap[$k] }
+function Require($k){ 
+    if(-not $envMap.ContainsKey($k)){ 
+        Write-Host "❌ DEPLOYMENT FAILED: Missing required configuration" -ForegroundColor Red
+        Write-Host "Missing variable: $k" -ForegroundColor Yellow
+        Write-Host "Please add $k=<value> to your .env file" -ForegroundColor Yellow
+        throw "Missing $k in .env" 
+    }
+    if([string]::IsNullOrWhiteSpace($envMap[$k])){
+        Write-Host "❌ DEPLOYMENT FAILED: Empty required configuration" -ForegroundColor Red
+        Write-Host "Variable $k is present but empty in .env file" -ForegroundColor Yellow
+        throw "$k cannot be empty in .env"
+    }
+    return $envMap[$k] 
+}
 function Get-Opt($k,$default){ if($envMap.ContainsKey($k) -and $envMap[$k]){ return $envMap[$k] } return $default }
 
 
@@ -108,10 +132,28 @@ Write-Host "Configuring managed identity..." -ForegroundColor Cyan
 
 # Enable system-assigned managed identity for the Function App
 Write-Host "  Enabling system-assigned managed identity for $FunctionAppName..."
-$identityResult = az functionapp identity assign --name $FunctionAppName --resource-group $ResourceGroup | ConvertFrom-Json
-$principalId = $identityResult.principalId
+try {
+    $identityResult = az functionapp identity assign --name $FunctionAppName --resource-group $ResourceGroup 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ DEPLOYMENT FAILED: Could not enable managed identity" -ForegroundColor Red
+        Write-Host "Azure CLI Error: $identityResult" -ForegroundColor Red
+        Write-Host "Possible causes:" -ForegroundColor Yellow
+        Write-Host "  - Function App '$FunctionAppName' does not exist in resource group '$ResourceGroup'" -ForegroundColor Yellow
+        Write-Host "  - Insufficient permissions to modify the Function App" -ForegroundColor Yellow
+        Write-Host "  - Azure CLI not logged in or subscription not set" -ForegroundColor Yellow
+        throw "Failed to enable managed identity: $identityResult"
+    }
+    $identityResult = $identityResult | ConvertFrom-Json
+    $principalId = $identityResult.principalId
+} catch {
+    Write-Host "❌ DEPLOYMENT FAILED: Error enabling managed identity" -ForegroundColor Red
+    Write-Host "Error details: $_" -ForegroundColor Red
+    throw "Failed to enable managed identity: $_"
+}
 
 if (-not $principalId) {
+    Write-Host "❌ DEPLOYMENT FAILED: Principal ID not found" -ForegroundColor Red
+    Write-Host "Managed identity was created but principal ID is empty" -ForegroundColor Red
     throw "Failed to enable managed identity or retrieve principal ID"
 }
 
@@ -119,11 +161,23 @@ Write-Host "  Principal ID: $principalId"
 
 # Get the AI resource ID for role assignment
 Write-Host "  Configuring role assignment for AI resource: $($aiInfo.ResourceName) in RG: $($aiInfo.ResourceGroup)..."
-$aiResourceId = az cognitiveservices account show --name $aiInfo.ResourceName --resource-group $aiInfo.ResourceGroup --query "id" -o tsv
+try {
+    $aiResourceId = az cognitiveservices account show --name $aiInfo.ResourceName --resource-group $aiInfo.ResourceGroup --query "id" -o tsv 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "⚠️  AI resource lookup failed" -ForegroundColor Yellow
+        Write-Host "Azure CLI Error: $aiResourceId" -ForegroundColor Red
+        $aiResourceId = $null
+    }
+} catch {
+    Write-Host "⚠️  Error looking up AI resource" -ForegroundColor Yellow
+    Write-Host "Error details: $_" -ForegroundColor Red
+    $aiResourceId = $null
+}
 
 if (-not $aiResourceId) {
-    Write-Warning "Could not find AI resource $($aiInfo.ResourceName) in resource group $($aiInfo.ResourceGroup). Please verify the resource exists and configure role assignment manually."
-    Write-Warning "Manual command: az role assignment create --assignee $principalId --role 'Cognitive Services User' --scope /subscriptions/<sub-id>/resourceGroups/$($aiInfo.ResourceGroup)/providers/Microsoft.CognitiveServices/accounts/$($aiInfo.ResourceName)"
+    Write-Host "⚠️  Could not find AI resource $($aiInfo.ResourceName) in resource group $($aiInfo.ResourceGroup)" -ForegroundColor Yellow
+    Write-Host "     Please verify the resource exists and configure role assignment manually." -ForegroundColor Yellow
+    Write-Host "     Manual command: az role assignment create --assignee $principalId --role 'Cognitive Services User' --scope /subscriptions/<sub-id>/resourceGroups/$($aiInfo.ResourceGroup)/providers/Microsoft.CognitiveServices/accounts/$($aiInfo.ResourceName)" -ForegroundColor Gray
 } else {
     # Assign Cognitive Services User role
     Write-Host "  Assigning 'Cognitive Services User' role..."
@@ -142,7 +196,20 @@ if (-not $aiResourceId) {
 }
 
 Write-Host "Applying settings..." -ForegroundColor Cyan
-az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings $settings | Out-Null
+try {
+    $settingsResult = az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings $settings 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ DEPLOYMENT FAILED: Could not apply function app settings" -ForegroundColor Red
+        Write-Host "Azure CLI Error: $settingsResult" -ForegroundColor Red
+        Write-Host "Attempted to set $($settings.Count) settings on $FunctionAppName" -ForegroundColor Yellow
+        throw "Failed to apply settings: $settingsResult"
+    }
+    Write-Host "  ✓ Applied $($settings.Count) settings successfully" -ForegroundColor Green
+} catch {
+    Write-Host "❌ DEPLOYMENT FAILED: Error applying function app settings" -ForegroundColor Red
+    Write-Host "Error details: $_" -ForegroundColor Red
+    throw "Failed to apply settings: $_"
+}
 
 # Deploy function app
 Write-Host "Publishing code..." -ForegroundColor Cyan
@@ -150,11 +217,36 @@ Write-Host "Publishing code..." -ForegroundColor Cyan
 # Ensure we're in the correct directory (where host.json is located)
 $projectRoot = $PSScriptRoot
 Write-Host "  Project root: $projectRoot" -ForegroundColor Gray
-Set-Location $projectRoot
+
+try {
+    Set-Location $projectRoot
+} catch {
+    Write-Host "❌ DEPLOYMENT FAILED: Cannot access project directory" -ForegroundColor Red
+    Write-Host "Directory: $projectRoot" -ForegroundColor Red
+    Write-Host "Error details: $_" -ForegroundColor Red
+    throw "Cannot access project directory: $_"
+}
 
 # Verify host.json exists
 if (-not (Test-Path "host.json")) {
+    Write-Host "❌ DEPLOYMENT FAILED: Missing host.json" -ForegroundColor Red
+    Write-Host "Expected location: $projectRoot\host.json" -ForegroundColor Red
+    Write-Host "Current directory contents:" -ForegroundColor Yellow
+    Get-ChildItem -Name | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
     throw "host.json not found in $projectRoot. Cannot deploy Azure Function."
+}
+
+# Verify function_app.py exists
+if (-not (Test-Path "function_app.py")) {
+    Write-Host "❌ DEPLOYMENT FAILED: Missing function_app.py" -ForegroundColor Red
+    Write-Host "Expected location: $projectRoot\function_app.py" -ForegroundColor Red
+    throw "function_app.py not found in $projectRoot. Cannot deploy Azure Function."
+}
+
+# Verify requirements.txt exists
+if (-not (Test-Path "requirements.txt")) {
+    Write-Host "⚠️  Warning: requirements.txt not found" -ForegroundColor Yellow
+    Write-Host "  Python dependencies may not be installed correctly" -ForegroundColor Yellow
 }
 
 Write-Host "  Starting deployment to $FunctionAppName..." -ForegroundColor Yellow
@@ -252,13 +344,62 @@ try {
     } else {
         $errorOutput = $errorBuilder.ToString()
         $standardOutput = $outputBuilder.ToString()
-        throw "Function app deployment failed with exit code $($process.ExitCode).`nOutput: $standardOutput`nErrors: $errorOutput"
+        
+        Write-Host ""
+        Write-Host "❌ DEPLOYMENT FAILED: Function app deployment failed" -ForegroundColor Red
+        Write-Host "Exit code: $($process.ExitCode)" -ForegroundColor Red
+        Write-Host "Duration: $($duration.TotalMinutes.ToString('F1')) minutes" -ForegroundColor Red
+        Write-Host ""
+        
+        if ($errorOutput.Trim()) {
+            Write-Host "ERROR OUTPUT:" -ForegroundColor Red
+            Write-Host "$errorOutput" -ForegroundColor Red
+            Write-Host ""
+        }
+        
+        if ($standardOutput.Trim()) {
+            Write-Host "STANDARD OUTPUT:" -ForegroundColor Yellow
+            Write-Host "$standardOutput" -ForegroundColor Gray
+            Write-Host ""
+        }
+        
+        # Try to provide helpful guidance based on common error patterns
+        if ($errorOutput -match "unauthorized|authentication|login") {
+            Write-Host "💡 TROUBLESHOOTING SUGGESTION:" -ForegroundColor Cyan
+            Write-Host "  Authentication issue detected. Try:" -ForegroundColor Yellow
+            Write-Host "  az login" -ForegroundColor Gray
+            Write-Host "  az account set --subscription <your-subscription-id>" -ForegroundColor Gray
+        } elseif ($errorOutput -match "not found|does not exist") {
+            Write-Host "💡 TROUBLESHOOTING SUGGESTION:" -ForegroundColor Cyan
+            Write-Host "  Resource not found. Verify:" -ForegroundColor Yellow
+            Write-Host "  - Function App name: $FunctionAppName" -ForegroundColor Gray
+            Write-Host "  - Resource Group: $ResourceGroup" -ForegroundColor Gray
+            Write-Host "  - Subscription is correct" -ForegroundColor Gray
+        } elseif ($errorOutput -match "requirements.txt|dependencies|pip") {
+            Write-Host "💡 TROUBLESHOOTING SUGGESTION:" -ForegroundColor Cyan
+            Write-Host "  Python dependency issue detected. Check:" -ForegroundColor Yellow
+            Write-Host "  - requirements.txt syntax" -ForegroundColor Gray
+            Write-Host "  - Package versions compatibility" -ForegroundColor Gray
+            Write-Host "  - Network connectivity for package downloads" -ForegroundColor Gray
+        }
+        
+        throw "Function app deployment failed with exit code $($process.ExitCode).`nSee error details above."
     }
     
 } catch {
     $endTime = Get-Date
     $duration = $endTime - $startTime
-    Write-Host "  ❌ Deployment failed after $($duration.TotalMinutes.ToString('F1')) minutes" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "❌ DEPLOYMENT FAILED: Unexpected error during deployment" -ForegroundColor Red
+    Write-Host "Duration: $($duration.TotalMinutes.ToString('F1')) minutes" -ForegroundColor Red
+    Write-Host "Error details: $_" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "💡 TROUBLESHOOTING:" -ForegroundColor Cyan
+    Write-Host "  1. Check if 'func' command is available: func --version" -ForegroundColor Yellow
+    Write-Host "  2. Verify Azure Functions Core Tools installation" -ForegroundColor Yellow
+    Write-Host "  3. Check network connectivity" -ForegroundColor Yellow
+    Write-Host "  4. Verify Azure CLI authentication: az account show" -ForegroundColor Yellow
+    Write-Host ""
     throw "Deployment error: $_"
 } finally {
     # Clean up event handlers
