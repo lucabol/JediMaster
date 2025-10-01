@@ -1109,48 +1109,115 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     try:
                         files = list(pr.get_files())
                         
-                        # Check if we got 0 files due to rate limiting
+                        # Check if we got 0 files
                         if len(files) == 0:
-                            self.logger.warning(f"PR #{pr.number} returned 0 files from get_files() - likely rate limit issue")
-                            
-                            # Add a comment about the issue and reassign to Copilot
+                            # Inspect recent issue comments to see if Copilot previously reported a rate limit
+                            last_comment = None
                             try:
-                                pr.create_issue_comment("@copilot I'm reassigning this PR to you to override rate limits and fetch the file contents for review.")
-                                self.logger.info(f"Added rate limit override comment to PR #{pr.number} in {repo_name}")
-                            except Exception as comment_e:
-                                self.logger.error(f"Failed to comment on PR #{pr.number} about rate limits: {comment_e}")
-                            
-                            # Reassign to Copilot if not already assigned
-                            if not self._is_copilot_already_assigned_to_pr(pr):
+                                comments = list(pr.get_issue_comments())
+                                if comments:
+                                    last_comment = comments[-1]
+                            except Exception as c_e:
+                                self.logger.warning(f"Failed to fetch comments for PR #{pr.number}: {c_e}")
+
+                            def _is_copilot_rate_limit_comment_from_body(body: str) -> bool:
+                                if not body:
+                                    return False
+                                b = body.lower()
+                                if 'copilot stopped work due to an error' in b:
+                                    return True
+                                if 'premium requests' in b or 'premium request' in b:
+                                    return True
+                                if 'rate limit' in b or 'rate-limited' in b or 'rate-limit' in b:
+                                    return True
+                                if 'session could not start' in b or 'used up the' in b:
+                                    return True
+                                return False
+
+                            def _is_copilot_rate_limit_comment(comment) -> bool:
+                                if not comment:
+                                    return False
                                 try:
-                                    repo_parts = repo_name.split('/')
-                                    repo_owner = repo_parts[0]
-                                    repo_name_only = repo_parts[1]
-                                    pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
-                                    if pr_id and bot_id:
-                                        success = self._assign_pr_via_graphql(pr_id, bot_id)
-                                        if success:
-                                            self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to rate limit on get_files()")
+                                    author = getattr(comment.user, 'login', '') or ''
+                                    author_l = author.lower()
+                                    body = comment.body or ''
+                                    known_bot_logins = [
+                                        'github-copilot-reviewer[bot]',
+                                        'github-copilot-reviewer',
+                                        'github-actions[bot]',
+                                        'copilot-swe-agent',
+                                    ]
+                                    is_bot = any(k in author_l for k in known_bot_logins) or 'copilot' in author_l or author_l.endswith('[bot]')
+                                    if is_bot and _is_copilot_rate_limit_comment_from_body(body):
+                                        return True
+                                    if 'copilot' in body.lower() and _is_copilot_rate_limit_comment_from_body(body):
+                                        return True
+                                except Exception:
+                                    return False
+                                return False
+
+                            if _is_copilot_rate_limit_comment(last_comment):
+                                # Copilot previously reported rate limit; reassign so Copilot can retry with elevated privileges
+                                try:
+                                    self.logger.warning(f"PR #{pr.number} returned 0 files and Copilot previously reported rate limits (comment by {detected_rate_limit_comment.user.login}). Reassigning to Copilot.")
+                                except Exception:
+                                    self.logger.warning(f"PR #{pr.number} returned 0 files and Copilot previously reported rate limits. Reassigning to Copilot.")
+
+                                try:
+                                    pr.create_issue_comment("@copilot I'm reassigning this PR to you to retry fetching the file contents due to previous rate limits.")
+                                    self.logger.info(f"Added rate limit override comment to PR #{pr.number} in {repo_name}")
+                                except Exception as comment_e:
+                                    self.logger.error(f"Failed to comment on PR #{pr.number} about rate limits: {comment_e}")
+
+                                # Reassign to Copilot if not already assigned
+                                if not self._is_copilot_already_assigned_to_pr(pr):
+                                    try:
+                                        repo_parts = repo_name.split('/')
+                                        repo_owner = repo_parts[0]
+                                        repo_name_only = repo_parts[1]
+                                        pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                                        if pr_id and bot_id:
+                                            success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                            if success:
+                                                self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to prior rate limit comment")
+                                            else:
+                                                self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after prior rate limit comment")
                                         else:
-                                            self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after rate limit issue")
-                                    else:
-                                        self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
-                                except Exception as assign_e:
-                                    self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
-                            else:
-                                self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning")
-                            
-                            # Skip this PR and continue to next one
-                            results.append(
-                                PRRunResult(
-                                    repo=repo_name,
-                                    pr_number=pr.number,
-                                    title=pr.title,
-                                    status='skipped',
-                                    details='Rate limit: 0 files returned, reassigned to Copilot',
+                                            self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                                    except Exception as assign_e:
+                                        self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
+                                else:
+                                    self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning")
+
+                                results.append(
+                                    PRRunResult(
+                                        repo=repo_name,
+                                        pr_number=pr.number,
+                                        title=pr.title,
+                                        status='skipped',
+                                        details='Rate limit reported by Copilot previously, reassigned to Copilot',
+                                    )
                                 )
-                            )
-                            continue
+                                continue
+                            else:
+                                # No Copilot rate-limit message - treat as a PR with no file changes. Comment and skip for human review.
+                                self.logger.info(f"PR #{pr.number} returned 0 files from get_files() and no Copilot rate-limit comment was detected.")
+                                try:
+                                    pr.create_issue_comment("No files were detected in this PR. If this PR requires review, please push changes or re-open with changes. Skipping for now.")
+                                    self.logger.info(f"Commented on PR #{pr.number} noting no file changes in {repo_name}")
+                                except Exception as comment_e:
+                                    self.logger.error(f"Failed to comment on PR #{pr.number} about empty file list: {comment_e}")
+
+                                results.append(
+                                    PRRunResult(
+                                        repo=repo_name,
+                                        pr_number=pr.number,
+                                        title=pr.title,
+                                        status='skipped',
+                                        details='No files changed in PR - skipped',
+                                    )
+                                )
+                                continue
                         
                         for file in files:
                             if hasattr(file, 'patch') and file.patch:
@@ -1377,6 +1444,30 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
             handler.setFormatter(formatter)
             logger.addHandler(handler)
         return logger
+
+    def _check_rate_limit_status(self) -> tuple[bool, str]:
+        """Check if we're hitting GitHub API rate limits.
+        
+        Returns:
+            tuple: (is_rate_limited, status_message)
+        """
+        try:
+            rate_limit = self.github.get_rate_limit()
+            core_remaining = rate_limit.core.remaining
+            core_limit = rate_limit.core.limit
+            
+            # Consider it rate limited if we have less than 10% remaining
+            rate_limit_threshold = max(10, core_limit * 0.1)
+            
+            if core_remaining <= rate_limit_threshold:
+                reset_time = rate_limit.core.reset.strftime('%H:%M:%S')
+                return True, f"Rate limit: {core_remaining}/{core_limit} remaining, resets at {reset_time}"
+            
+            return False, f"Rate limit OK: {core_remaining}/{core_limit} remaining"
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to check rate limit status: {e}")
+            return False, "Rate limit check failed"
 
     def _graphql_request(self, query: str, variables: Optional[Dict] = None) -> Dict:
         url = "https://api.github.com/graphql"
