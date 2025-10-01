@@ -40,6 +40,16 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     if not github_token:
         logging.error("[AutomateRepos] Missing GITHUB_TOKEN – aborting")
         return
+    
+    # Log masked token for verification
+    token_length = len(github_token)
+    if token_length > 10:
+        masked_token = github_token[:6] + "*" * (token_length - 10) + github_token[-4:]
+    elif token_length > 4:
+        masked_token = "*" * (token_length - 4) + github_token[-4:]
+    else:
+        masked_token = "*" * token_length
+    logging.info(f"[AutomateRepos] Using GitHub token: {masked_token} (length: {token_length})")
     if not azure_foundry_endpoint:
         logging.error("[AutomateRepos] Missing AZURE_AI_FOUNDRY_ENDPOINT – aborting")
         return
