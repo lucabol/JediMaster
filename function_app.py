@@ -1,6 +1,7 @@
 import azure.functions as func
 import logging, os, json, traceback
 from datetime import datetime
+from dataclasses import asdict
 
 from jedimaster import JediMaster
 from creator import CreatorAgent
@@ -149,7 +150,8 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             if process_prs_flag:
                 try:
                     pr_results = jedi.process_pull_requests(repo_full)
-                    repo_block['pr_reviews'] = pr_results
+                    # Convert PRRunResult objects to dicts for JSON serialization
+                    repo_block['pr_reviews'] = [asdict(r) for r in pr_results]
                     logging.info(f"[AutomateRepos] PR review results count={len(pr_results)} repo={repo_full}")
                 except Exception as e:
                     logging.error(f"[AutomateRepos] PR review failed for {repo_full}: {e}")
@@ -157,17 +159,19 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 if auto_merge_flag:
                     try:
                         merge_results = jedi.merge_reviewed_pull_requests(repo_full)
-                        repo_block['merge'] = merge_results
+                        # Convert PRRunResult objects to dicts for JSON serialization
+                        merge_dicts = [asdict(r) for r in merge_results]
+                        repo_block['merge'] = merge_dicts
                         
                         # Create summary stats for merge results
                         merge_stats = {
-                            'total_prs': len(merge_results),
-                            'merged': sum(1 for r in merge_results if r.get('status') == 'merged'),
-                            'merge_errors': sum(1 for r in merge_results if r.get('status') == 'merge_error'),
-                            'max_retries_exceeded': sum(1 for r in merge_results if r.get('status') == 'max_retries_exceeded')
+                            'total_prs': len(merge_dicts),
+                            'merged': sum(1 for r in merge_dicts if r.get('status') == 'merged'),
+                            'merge_errors': sum(1 for r in merge_dicts if r.get('status') == 'merge_error'),
+                            'max_retries_exceeded': sum(1 for r in merge_dicts if r.get('status') == 'max_retries_exceeded')
                         }
                         
-                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_results, 'stats': merge_stats})
+                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_dicts, 'stats': merge_stats})
                         logging.info(f"[AutomateRepos] Merge attempt results count={len(merge_results)} repo={repo_full} stats={merge_stats}")
                     except Exception as e:
                         logging.error(f"[AutomateRepos] Auto-merge failed for {repo_full}: {e}")

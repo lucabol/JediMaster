@@ -578,7 +578,7 @@ Write-Host "  AI Resource:      $($aiInfo.ResourceName) (RG: $($aiInfo.ResourceG
 
 Write-Host ""
 Write-Host "💡 Next steps to verify your deployment:" -ForegroundColor Cyan
-Write-Host "  1. Monitor logs: az functionapp logs tail --name $FunctionAppName --resource-group $ResourceGroup" -ForegroundColor Gray
+Write-Host "  1. Check deployment logs: az functionapp log deployment show --name $FunctionAppName --resource-group $ResourceGroup" -ForegroundColor Gray
 Write-Host "  2. Check portal: https://portal.azure.com/#@/resource/subscriptions/<subscription>/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$FunctionAppName" -ForegroundColor Gray
 Write-Host "  3. Test reset endpoint: POST https://$FunctionAppName.azurewebsites.net/api/reset?code=<function-key>" -ForegroundColor Gray
 Write-Host "  4. Wait for timer trigger: Next run according to '$ScheduleCron'" -ForegroundColor Gray

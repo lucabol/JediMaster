@@ -1107,7 +1107,51 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     
                     # Get the files changed in the PR
                     try:
-                        files = pr.get_files()
+                        files = list(pr.get_files())
+                        
+                        # Check if we got 0 files due to rate limiting
+                        if len(files) == 0:
+                            self.logger.warning(f"PR #{pr.number} returned 0 files from get_files() - likely rate limit issue")
+                            
+                            # Add a comment about the issue and reassign to Copilot
+                            try:
+                                pr.create_issue_comment("@copilot I'm reassigning this PR to you to override rate limits and fetch the file contents for review.")
+                                self.logger.info(f"Added rate limit override comment to PR #{pr.number} in {repo_name}")
+                            except Exception as comment_e:
+                                self.logger.error(f"Failed to comment on PR #{pr.number} about rate limits: {comment_e}")
+                            
+                            # Reassign to Copilot if not already assigned
+                            if not self._is_copilot_already_assigned_to_pr(pr):
+                                try:
+                                    repo_parts = repo_name.split('/')
+                                    repo_owner = repo_parts[0]
+                                    repo_name_only = repo_parts[1]
+                                    pr_id, bot_id = self._get_pr_id_and_bot_id(repo_owner, repo_name_only, pr.number)
+                                    if pr_id and bot_id:
+                                        success = self._assign_pr_via_graphql(pr_id, bot_id)
+                                        if success:
+                                            self.logger.info(f"Successfully reassigned PR #{pr.number} to Copilot due to rate limit on get_files()")
+                                        else:
+                                            self.logger.warning(f"Failed to reassign PR #{pr.number} to Copilot after rate limit issue")
+                                    else:
+                                        self.logger.warning(f"Could not find PR ID or suitable bot for reassigning PR #{pr.number}")
+                                except Exception as assign_e:
+                                    self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot: {assign_e}")
+                            else:
+                                self.logger.info(f"PR #{pr.number} is already assigned to Copilot, not reassigning")
+                            
+                            # Skip this PR and continue to next one
+                            results.append(
+                                PRRunResult(
+                                    repo=repo_name,
+                                    pr_number=pr.number,
+                                    title=pr.title,
+                                    status='skipped',
+                                    details='Rate limit: 0 files returned, reassigned to Copilot',
+                                )
+                            )
+                            continue
+                        
                         for file in files:
                             if hasattr(file, 'patch') and file.patch:
                                 diff_content += f"\n--- {file.filename} ---\n"
