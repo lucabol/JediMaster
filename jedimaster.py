@@ -68,8 +68,18 @@ class ProcessingReport:
 
 # Main class for processing GitHub issues and PRs for Copilot
 class JediMaster:
-    def _get_issue_id_and_bot_id(self, repo_owner: str, repo_name: str, issue_number: int) -> tuple[Optional[str], Optional[str]]:
-        """Get the GitHub node ID for an issue and find the Copilot bot using suggestedActors."""
+    def _get_issue_id_and_bot_id(
+        self, repo_owner: str, repo_name: str, issue_number: int
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Get the GitHub node ID for an issue and find the Copilot bot using suggestedActors.
+
+        Returns
+        -------
+        tuple
+            (issue_id, bot_id, error_detail) where error_detail provides additional context when
+            either identifier could not be retrieved.
+        """
+
         query = """
         query($owner: String!, $name: String!, $issueNumber: Int!) {
           repository(owner: $owner, name: $name) {
@@ -94,37 +104,68 @@ class JediMaster:
         variables = {
             "owner": repo_owner,
             "name": repo_name,
-            "issueNumber": issue_number
+            "issueNumber": issue_number,
         }
+
         try:
             result = self._graphql_request(query, variables)
             if "errors" in result:
-                self.logger.error(f"GraphQL errors: {result['errors']}")
-                return None, None
-            data = result["data"]
-            issue_id = data["repository"]["issue"]["id"]
+                error_detail = json.dumps(result["errors"], ensure_ascii=False)
+                self.logger.error(f"GraphQL errors: {error_detail}")
+                return None, None, error_detail
+
+            data = result.get("data", {})
+            repository_data = data.get("repository") or {}
+            issue_data = repository_data.get("issue")
+            if not issue_data:
+                error_detail = "Issue not found in GraphQL response"
+                self.logger.error(error_detail)
+                return None, None, error_detail
+
+            issue_id = issue_data.get("id")
             bot_id = None
-            suggested_actors = data["repository"]["suggestedActors"]["nodes"]
+            suggested_actors = (repository_data.get("suggestedActors") or {}).get("nodes", [])
             for actor in suggested_actors:
                 login = actor["login"]
                 if login == "copilot-swe-agent" or "copilot" in login.lower():
                     bot_id = actor["id"]
-                    self.logger.info(f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})")
+                    self.logger.info(
+                        f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})"
+                    )
                     break
+
             if not bot_id:
-                self.logger.warning(f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}")
+                self.logger.warning(
+                    f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}"
+                )
                 if suggested_actors:
                     actor_logins = [actor["login"] for actor in suggested_actors]
                     self.logger.info(f"Available suggested actors: {actor_logins}")
+                    error_detail = f"No Copilot actors; suggested actors: {', '.join(actor_logins)}"
                 else:
-                    self.logger.info("No suggested actors found - Copilot may not be enabled for this repository")
-            return issue_id, bot_id
+                    self.logger.info(
+                        "No suggested actors found - Copilot may not be enabled for this repository"
+                    )
+                    error_detail = (
+                        "No suggested actors returned; ensure Copilot is enabled for this repository"
+                    )
+                return issue_id, None, error_detail
+
+            return issue_id, bot_id, None
+
         except Exception as e:
             self.logger.error(f"Error getting issue and bot IDs: {e}")
-            return None, None
+            return None, None, str(e)
 
-    def _assign_issue_via_graphql(self, issue_id: str, bot_id: str) -> bool:
-        """Assign an issue to a bot using GraphQL mutation."""
+    def _assign_issue_via_graphql(self, issue_id: str, bot_id: str) -> tuple[bool, Optional[str]]:
+        """Assign an issue to a bot using GraphQL mutation.
+
+        Returns
+        -------
+        tuple
+            (success, error_detail) where error_detail is populated when the mutation fails.
+        """
+
         mutation = """
         mutation($assignableId: ID!, $actorIds: [ID!]!) {
           replaceActorsForAssignable(input: {assignableId: $assignableId, actorIds: $actorIds}) {
@@ -144,20 +185,21 @@ class JediMaster:
         """
         variables = {
             "assignableId": issue_id,
-            "actorIds": [bot_id]
+            "actorIds": [bot_id],
         }
         try:
             result = self._graphql_request(mutation, variables)
             if "errors" in result:
-                self.logger.error(f"GraphQL mutation errors: {result['errors']}")
-                return False
+                error_detail = json.dumps(result["errors"], ensure_ascii=False)
+                self.logger.error(f"GraphQL mutation errors: {error_detail}")
+                return False, error_detail
             assignees = result["data"]["replaceActorsForAssignable"]["assignable"]["assignees"]["nodes"]
             assigned_logins = [assignee["login"] for assignee in assignees]
             self.logger.info(f"Successfully assigned issue. Current assignees: {assigned_logins}")
-            return True
+            return True, None
         except Exception as e:
             self.logger.error(f"Error assigning issue via GraphQL: {e}")
-            return False
+            return False, str(e)
 
     def _get_pr_id_and_bot_id(self, repo_owner: str, repo_name: str, pr_number: int) -> tuple[Optional[str], Optional[str]]:
         """Get the GitHub node ID for a PR and find the Copilot bot using suggestedActors."""
@@ -474,9 +516,9 @@ class JediMaster:
                         repo_full_name = repo.full_name.split('/')
                         repo_owner = repo_full_name[0]
                         repo_name_only = repo_full_name[1]
-                        issue_id, bot_id = self._get_issue_id_and_bot_id(repo_owner, repo_name_only, issue.number)
+                        issue_id, bot_id, lookup_error = self._get_issue_id_and_bot_id(repo_owner, repo_name_only, issue.number)
                         if issue_id and bot_id:
-                            success = self._assign_issue_via_graphql(issue_id, bot_id)
+                            success, assign_error = self._assign_issue_via_graphql(issue_id, bot_id)
                             if success:
                                 status = 'assigned'
                                 # Add label only on successful assignment
@@ -485,7 +527,8 @@ class JediMaster:
                                 except Exception as e:
                                     self.logger.warning(f"Failed to add label to issue #{issue.number}: {e}")
                             else:
-                                self.logger.error(f"GraphQL assignment failed for issue #{issue.number}")
+                                assign_error = assign_error or "Unknown GraphQL assignment error"
+                                self.logger.error(f"GraphQL assignment failed for issue #{issue.number}: {assign_error}")
                                 return IssueResult(
                                     repo=repo_name,
                                     issue_number=issue.number,
@@ -493,10 +536,11 @@ class JediMaster:
                                     url=issue.html_url,
                                     status='error',
                                     reasoning=result.get('reasoning'),
-                                    error_message="GraphQL assignment failed"
+                                    error_message=assign_error or "GraphQL assignment failed"
                                 )
                         else:
-                            self.logger.error(f"Could not find issue ID or suitable bot for issue #{issue.number}")
+                            error_message = lookup_error or "Could not find issue ID or suitable bot"
+                            self.logger.error(f"Could not find issue ID or suitable bot for issue #{issue.number}: {error_message}")
                             return IssueResult(
                                 repo=repo_name,
                                 issue_number=issue.number,
@@ -504,7 +548,7 @@ class JediMaster:
                                 url=issue.html_url,
                                 status='error',
                                 reasoning=result.get('reasoning'),
-                                error_message="Could not find issue ID or suitable bot"
+                                error_message=error_message
                             )
                     except Exception as e:
                         self.logger.error(f"Failed to assign Copilot to issue #{issue.number}: {e}")
@@ -1508,8 +1552,20 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
         if variables:
             payload["variables"] = variables
         response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as http_err:
+            body_preview = response.text[:500]
+            raise RuntimeError(
+                f"GraphQL request failed with status {response.status_code}: {body_preview}"
+            ) from http_err
+        try:
+            return response.json()
+        except ValueError as json_err:
+            body_preview = response.text[:500]
+            raise RuntimeError(
+                f"Failed to decode GraphQL response as JSON: {body_preview}"
+            ) from json_err
 
     def _get_pr_review_states(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
         """Get the review states for a PR using GraphQL."""
