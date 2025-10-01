@@ -479,22 +479,51 @@ class JediMaster:
                             success = self._assign_issue_via_graphql(issue_id, bot_id)
                             if success:
                                 status = 'assigned'
+                                # Add label only on successful assignment
+                                try:
+                                    issue.add_to_labels('copilot-candidate')
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to add label to issue #{issue.number}: {e}")
                             else:
-                                self.logger.warning(f"GraphQL assignment failed for issue #{issue.number}")
-                                status = 'labeled'
+                                self.logger.error(f"GraphQL assignment failed for issue #{issue.number}")
+                                return IssueResult(
+                                    repo=repo_name,
+                                    issue_number=issue.number,
+                                    title=issue.title,
+                                    url=issue.html_url,
+                                    status='error',
+                                    reasoning=result.get('reasoning'),
+                                    error_message="GraphQL assignment failed"
+                                )
                         else:
-                            self.logger.warning(f"Could not find issue ID or suitable bot for issue #{issue.number}")
-                            status = 'labeled'
+                            self.logger.error(f"Could not find issue ID or suitable bot for issue #{issue.number}")
+                            return IssueResult(
+                                repo=repo_name,
+                                issue_number=issue.number,
+                                title=issue.title,
+                                url=issue.html_url,
+                                status='error',
+                                reasoning=result.get('reasoning'),
+                                error_message="Could not find issue ID or suitable bot"
+                            )
                     except Exception as e:
-                        self.logger.warning(f"Failed to assign Copilot to issue #{issue.number}: {e}")
-                        status = 'labeled'
+                        self.logger.error(f"Failed to assign Copilot to issue #{issue.number}: {e}")
+                        return IssueResult(
+                            repo=repo_name,
+                            issue_number=issue.number,
+                            title=issue.title,
+                            url=issue.html_url,
+                            status='error',
+                            reasoning=result.get('reasoning'),
+                            error_message=str(e)
+                        )
                 else:
                     status = 'labeled'
-                # Add label
-                try:
-                    issue.add_to_labels('copilot-candidate')
-                except Exception as e:
-                    self.logger.warning(f"Failed to add label to issue #{issue.number}: {e}")
+                    # Add label when in just-label mode
+                    try:
+                        issue.add_to_labels('copilot-candidate')
+                    except Exception as e:
+                        self.logger.warning(f"Failed to add label to issue #{issue.number}: {e}")
                 return IssueResult(
                     repo=repo_name,
                     issue_number=issue.number,
@@ -852,7 +881,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     
                     # Add a comment to the PR about conflicts
                     try:
-                        pr.create_issue_comment("@copilot please fix merge conflicts")
+                        pr.create_issue_comment("@copilot please fix merge conflicts. When you have completed your work, please submit a review request.")
                         self.logger.info(f"Added conflict comment to PR #{pr.number} in {repo_name}")
                     except Exception as e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about conflicts: {e}")
@@ -1009,7 +1038,7 @@ The auto-merge system will no longer attempt to merge this PR automatically."""
                     
                     # Add a comment about exception and reassign to Copilot
                     try:
-                        pr.create_issue_comment(f"Auto-merge exception (attempt {attempt_count}): {str(e)}. Please investigate.")
+                        pr.create_issue_comment(f"Auto-merge exception (attempt {attempt_count}): {str(e)}. Please investigate. When you have completed your work, please submit a review request.")
                         self.logger.info(f"Added merge exception comment to PR #{pr.number} in {repo_name}")
                     except Exception as comment_e:
                         self.logger.error(f"Failed to comment on PR #{pr.number} about merge exception: {comment_e}")
