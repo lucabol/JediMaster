@@ -1751,7 +1751,7 @@ def main():
         parser.error("Similarity threshold must be between 0.0 and 1.0")
 
     # Load environment variables from .env file (if it exists)
-    load_dotenv()
+    load_dotenv(override=True)
 
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
@@ -1761,6 +1761,13 @@ def main():
         print("Error: GITHUB_TOKEN environment variable is required")
         print("Set it in .env file or as a system environment variable")
         return 1
+
+    def _mask_token(token: str) -> str:
+        if len(token) <= 10:
+            return token
+        return f"{token[:6]}...{token[-4:]}"
+
+    print(f"Using GITHUB_TOKEN: {_mask_token(github_token)}")
 
     if not azure_foundry_endpoint:
         print("Error: AZURE_AI_FOUNDRY_ENDPOINT environment variable is required")
