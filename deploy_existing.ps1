@@ -181,7 +181,7 @@ if (-not $aiResourceId) {
 } else {
     # Assign Cognitive Services User role
     Write-Host "  Assigning 'Cognitive Services User' role..."
-    $roleAssignment = az role assignment create --assignee $principalId --role "Cognitive Services User" --scope $aiResourceId 2>$null
+    [void](az role assignment create --assignee $principalId --role "Cognitive Services User" --scope $aiResourceId 2>$null)
     if ($LASTEXITCODE -eq 0) {
         Write-Host "  ✓ Role assignment completed successfully" -ForegroundColor Green
     } else {
@@ -411,174 +411,13 @@ try {
         $process.Dispose()
     }
 }
-
-# Verify deployment completed successfully
-Write-Host "Verifying deployment..." -ForegroundColor Cyan
-
-# 1. Check function app status
-Write-Host "  Checking function app status..." -ForegroundColor Yellow
-try {
-    $appStatus = az functionapp show --name $FunctionAppName --resource-group $ResourceGroup --query "{state:state,hostName:defaultHostName,lastModified:lastModifiedTimeUtc}" -o json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠️  Could not retrieve function app status" -ForegroundColor Yellow
-        Write-Host "     Error: $appStatus" -ForegroundColor Red
-    } else {
-        $statusObj = $appStatus | ConvertFrom-Json
-        Write-Host "  ✓ Function App Status: $($statusObj.state)" -ForegroundColor Green
-        Write-Host "    Host: $($statusObj.hostName)" -ForegroundColor Gray
-        Write-Host "    Last Modified: $($statusObj.lastModified)" -ForegroundColor Gray
-        
-        if ($statusObj.state -ne "Running") {
-            Write-Host "  ⚠️  Function app is not in Running state" -ForegroundColor Yellow
-        }
-    }
-} catch {
-    Write-Host "  ⚠️  Error checking function app status: $_" -ForegroundColor Yellow
-}
-
-# 2. Check function list and timer trigger
-Write-Host "  Checking deployed functions..." -ForegroundColor Yellow
-try {
-    $functions = az functionapp function list --name $FunctionAppName --resource-group $ResourceGroup --query "[].{name:name,triggerType:triggerType,status:status}" -o json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠️  Could not retrieve function list" -ForegroundColor Yellow
-        Write-Host "     Error: $functions" -ForegroundColor Red
-    } else {
-        $functionsObj = $functions | ConvertFrom-Json
-        if ($functionsObj.Count -eq 0) {
-            Write-Host "  ❌ No functions found in the app!" -ForegroundColor Red
-            Write-Host "     This indicates the deployment may not have completed properly." -ForegroundColor Red
-        } else {
-            Write-Host "  ✓ Found $($functionsObj.Count) function(s):" -ForegroundColor Green
-            foreach ($func in $functionsObj) {
-                $statusColor = if ($func.status -eq "Enabled") { "Green" } else { "Yellow" }
-                Write-Host "    - $($func.name) ($($func.triggerType)) - Status: $($func.status)" -ForegroundColor $statusColor
-            }
-            
-            # Check for timer trigger specifically
-            $timerFunctions = $functionsObj | Where-Object { $_.triggerType -eq "timerTrigger" }
-            if ($timerFunctions.Count -eq 0) {
-                Write-Host "  ⚠️  No timer trigger functions found" -ForegroundColor Yellow
-            } else {
-                Write-Host "  ✓ Timer trigger functions configured correctly" -ForegroundColor Green
-            }
-        }
-    }
-} catch {
-    Write-Host "  ⚠️  Error checking functions: $_" -ForegroundColor Yellow
-}
-
-# 3. Verify application settings were applied
-Write-Host "  Verifying application settings..." -ForegroundColor Yellow
-try {
-    $currentSettings = az functionapp config appsettings list --name $FunctionAppName --resource-group $ResourceGroup --query "[?name=='AUTOMATION_REPOS' || name=='SCHEDULE_CRON' || name=='GITHUB_TOKEN'].{name:name,value:value}" -o json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ⚠️  Could not retrieve application settings" -ForegroundColor Yellow
-        Write-Host "     Error: $currentSettings" -ForegroundColor Red
-    } else {
-        $settingsObj = $currentSettings | ConvertFrom-Json
-        $foundSettings = @{}
-        foreach ($setting in $settingsObj) {
-            $foundSettings[$setting.name] = $setting.value
-        }
-        
-        # Check key settings
-        if ($foundSettings.ContainsKey('AUTOMATION_REPOS')) {
-            Write-Host "  ✓ AUTOMATION_REPOS: $($foundSettings['AUTOMATION_REPOS'])" -ForegroundColor Green
-        } else {
-            Write-Host "  ❌ AUTOMATION_REPOS setting not found" -ForegroundColor Red
-        }
-        
-        if ($foundSettings.ContainsKey('SCHEDULE_CRON')) {
-            Write-Host "  ✓ SCHEDULE_CRON: $($foundSettings['SCHEDULE_CRON'])" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠️  SCHEDULE_CRON setting not found (using default)" -ForegroundColor Yellow
-        }
-        
-        if ($foundSettings.ContainsKey('GITHUB_TOKEN')) {
-            $tokenLength = $foundSettings['GITHUB_TOKEN'].Length
-            $maskedToken = "*" * [Math]::Max(0, $tokenLength - 4) + $foundSettings['GITHUB_TOKEN'].Substring([Math]::Max(0, $tokenLength - 4))
-            Write-Host "  ✓ GITHUB_TOKEN: $maskedToken" -ForegroundColor Green
-        } else {
-            Write-Host "  ❌ GITHUB_TOKEN setting not found" -ForegroundColor Red
-        }
-    }
-} catch {
-    Write-Host "  ⚠️  Error checking application settings: $_" -ForegroundColor Yellow
-}
-
-# 4. Test the reset endpoint to verify the function app is responding
-Write-Host "  Testing function app responsiveness..." -ForegroundColor Yellow
-try {
-    $hostKey = az functionapp keys list --name $FunctionAppName --resource-group $ResourceGroup --query "functionKeys.default" -o tsv 2>$null
-    if ($hostKey -and $LASTEXITCODE -eq 0) {
-        $testUrl = "https://$FunctionAppName.azurewebsites.net/api/reset?code=$hostKey"
-        
-        # Quick HEAD request to check if the endpoint responds (don't actually reset)
-        $response = try {
-            Invoke-WebRequest -Uri $testUrl -Method HEAD -TimeoutSec 10 -ErrorAction Stop
-            "SUCCESS"
-        } catch {
-            if ($_.Exception.Message -match "405" -or $_.Exception.Message -match "Method Not Allowed") {
-                # 405 is expected for HEAD on POST endpoint - means the app is responding
-                "SUCCESS"
-            } else {
-                $_.Exception.Message
-            }
-        }
-        
-        if ($response -eq "SUCCESS") {
-            Write-Host "  ✓ Function app is responding to requests" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠️  Function app response test failed: $response" -ForegroundColor Yellow
-            Write-Host "     This might be normal if the app is still warming up." -ForegroundColor Gray
-        }
-    } else {
-        Write-Host "  ⚠️  Could not retrieve function key for testing" -ForegroundColor Yellow
-    }
-} catch {
-    Write-Host "  ⚠️  Error testing function app: $_" -ForegroundColor Yellow
-}
-
-# 5. Check recent deployment logs for any errors
-Write-Host "  Checking recent deployment logs..." -ForegroundColor Yellow
-try {
-    $recentLogs = az functionapp logs tail --name $FunctionAppName --resource-group $ResourceGroup --timeout 5 2>$null
-    if ($recentLogs -and $LASTEXITCODE -eq 0) {
-        $errorLines = $recentLogs | Where-Object { $_ -match "(error|exception|failed)" -and $_ -notmatch "INFO" }
-        if ($errorLines.Count -eq 0) {
-            Write-Host "  ✓ No recent errors found in logs" -ForegroundColor Green
-        } else {
-            Write-Host "  ⚠️  Found $($errorLines.Count) potential error(s) in recent logs:" -ForegroundColor Yellow
-            $errorLines | Select-Object -First 3 | ForEach-Object {
-                Write-Host "     $_" -ForegroundColor Red
-            }
-        }
-    } else {
-        Write-Host "  ⚠️  Could not retrieve recent logs" -ForegroundColor Yellow
-    }
-} catch {
-    Write-Host "  ⚠️  Error checking logs: $_" -ForegroundColor Yellow
-}
-
-Write-Host ""
-Write-Host "✓ Deployment verification completed" -ForegroundColor Green
-Write-Host ""
-
-Write-Host "Done." -ForegroundColor Green
+Write-Host "" 
+Write-Host "Deployment finished. Verification steps and automatic suggestions have been removed from this script." -ForegroundColor Green
 Write-Host "Summary:" -ForegroundColor Cyan
 Write-Host "  FunctionApp:      $FunctionAppName"
 Write-Host "  Repos:            $repos"
-Write-Host "  Create Issues:    $createEnv (count=$createCount)"
-Write-Host "  JUST_LABEL:       $justLabel"
-Write-Host "  PROCESS_PRS:      $processPrs  AUTO_MERGE: $autoMerge"
 Write-Host "  Schedule:         $ScheduleCron"
 Write-Host "  Auth:             Managed Identity" -ForegroundColor Green
 Write-Host "  AI Resource:      $($aiInfo.ResourceName) (RG: $($aiInfo.ResourceGroup))" -ForegroundColor Green
 
-Write-Host ""
-Write-Host "💡 Next steps to verify your deployment:" -ForegroundColor Cyan
-Write-Host "  1. Check deployment logs: az functionapp log deployment show --name $FunctionAppName --resource-group $ResourceGroup" -ForegroundColor Gray
-Write-Host "  2. Check portal: https://portal.azure.com/#@/resource/subscriptions/<subscription>/resourceGroups/$ResourceGroup/providers/Microsoft.Web/sites/$FunctionAppName" -ForegroundColor Gray
-Write-Host "  3. Test reset endpoint: POST https://$FunctionAppName.azurewebsites.net/api/reset?code=<function-key>" -ForegroundColor Gray
-Write-Host "  4. Wait for timer trigger: Next run according to '$ScheduleCron'" -ForegroundColor Gray
+Write-Host "Done." -ForegroundColor Green
