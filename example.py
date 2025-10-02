@@ -268,7 +268,7 @@ def main():
     use_topic_filter = not args.use_file_filter  # Default to topic filtering unless file filtering is explicitly requested
 
     # Load environment variables from .env file (if it exists)
-    load_dotenv()
+    load_dotenv(override=True)
 
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
