@@ -1,5 +1,6 @@
 import azure.functions as func
 import logging, os, json, traceback
+from collections import Counter
 from datetime import datetime
 from dataclasses import asdict
 
@@ -101,7 +102,7 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         'repos_processed': 0,
         'issue_reports': [],  # per repo issue stats
         'issue_creation': [],  # per repo created issues
-        'pr_merge': [],        # per repo merge results
+        'pr_management': [],   # per repo PR state-machine results
         'errors': []
     }
 
@@ -112,7 +113,7 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         just_label=just_label_flag,
         use_topic_filter=not use_file_filter,
         process_prs=False,  # we'll call PR / merge flows explicitly
-        auto_merge_reviewed=False
+        auto_merge_reviewed=auto_merge_flag
     )
 
     for repo_full in repo_names:
@@ -146,36 +147,29 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             except Exception as e:
                 logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
                 summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
-            # 3. PR review & optional auto merge
+            # 3. PR management via state machine
             if process_prs_flag:
                 try:
-                    pr_results = jedi.process_pull_requests(repo_full)
-                    # Convert PRRunResult objects to dicts for JSON serialization
-                    repo_block['pr_reviews'] = [asdict(r) for r in pr_results]
-                    logging.info(f"[AutomateRepos] PR review results count={len(pr_results)} repo={repo_full}")
+                    pr_results = jedi.manage_pull_requests(repo_full)
+                    pr_dicts = [asdict(r) for r in pr_results]
+                    repo_block['pr_management'] = pr_dicts
+
+                    status_counter = Counter(r.status for r in pr_results)
+                    summary['pr_management'].append({
+                        'repo': repo_full,
+                        'results': pr_dicts,
+                        'stats': dict(status_counter)
+                    })
+
+                    logging.info(
+                        "[AutomateRepos] PR management results count=%s repo=%s stats=%s",
+                        len(pr_results),
+                        repo_full,
+                        dict(status_counter)
+                    )
                 except Exception as e:
-                    logging.error(f"[AutomateRepos] PR review failed for {repo_full}: {e}")
-                    summary['errors'].append({'repo': repo_full, 'stage': 'pr_review', 'error': str(e)})
-                if auto_merge_flag:
-                    try:
-                        merge_results = jedi.merge_reviewed_pull_requests(repo_full)
-                        # Convert PRRunResult objects to dicts for JSON serialization
-                        merge_dicts = [asdict(r) for r in merge_results]
-                        repo_block['merge'] = merge_dicts
-                        
-                        # Create summary stats for merge results
-                        merge_stats = {
-                            'total_prs': len(merge_dicts),
-                            'merged': sum(1 for r in merge_dicts if r.get('status') == 'merged'),
-                            'merge_errors': sum(1 for r in merge_dicts if r.get('status') == 'merge_error'),
-                            'max_retries_exceeded': sum(1 for r in merge_dicts if r.get('status') == 'max_retries_exceeded')
-                        }
-                        
-                        summary['pr_merge'].append({'repo': repo_full, 'results': merge_dicts, 'stats': merge_stats})
-                        logging.info(f"[AutomateRepos] Merge attempt results count={len(merge_results)} repo={repo_full} stats={merge_stats}")
-                    except Exception as e:
-                        logging.error(f"[AutomateRepos] Auto-merge failed for {repo_full}: {e}")
-                        summary['errors'].append({'repo': repo_full, 'stage': 'auto_merge', 'error': str(e)})
+                    logging.error(f"[AutomateRepos] PR management failed for {repo_full}: {e}")
+                    summary['errors'].append({'repo': repo_full, 'stage': 'pr_management', 'error': str(e)})
             summary['repos_processed'] += 1
         except Exception as e:
             logging.error(f"[AutomateRepos] Unexpected failure for {repo_full}: {e}\n{traceback.format_exc()}")

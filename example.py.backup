@@ -54,20 +54,6 @@ class PRRunResult:
     action: Optional[str] = None
 
 
-@dataclass
-class ProcessingReport:
-    """Represents the result of processing multiple issues or repositories."""
-    total_issues: int = 0
-    processed: int = 0
-    assigned: int = 0
-    already_assigned: int = 0
-    not_assigned: int = 0
-    labeled: int = 0
-    errors: int = 0
-    results: List[IssueResult] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-
-
 COPILOT_STATE_LABEL_PREFIX = "copilot-state:"
 MERGE_ATTEMPT_LABEL_PREFIX = "merge-attempt-"
 
@@ -88,6 +74,14 @@ COPILOT_LABEL_PALETTE = {
 
 
 class JediMaster:
+    def __init__(self, github_token: str, azure_ai_token: str, azure_endpoint: str, reporting: bool = False):
+        self.reporting = reporting
+        if self.reporting:
+            logging.basicConfig(level=logging.INFO)
+
+        self.g = Github(github_token)
+        self.azure_ai_token = azure_ai_token
+        self.azure_endpoint = azure_endpoint
 
     def _mark_pr_ready_for_review(self, pr) -> None:
         """Mark a draft PR as ready for review via GraphQL."""
@@ -132,13 +126,6 @@ class JediMaster:
     def _handle_pending_review_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
-
-        # Defensive check to ensure metadata is properly passed
-        if not isinstance(metadata, dict):
-            self.logger.error(f"Invalid metadata type for PR #{pr.number}: {type(metadata)}")
-            return []
-
-        self.logger.debug(f"_handle_pending_review_state called for PR #{pr.number} with metadata keys: {list(metadata.keys())}")
 
         if metadata.get('has_current_approval') and not metadata.get('has_new_commits_since_copilot_review'):
             self._set_state_label(pr, STATE_READY_TO_MERGE)
@@ -324,7 +311,7 @@ class JediMaster:
         except Exception as exc:
             self.logger.error(f"Failed to refresh PR #{pr.number} before merge: {exc}")
 
-        if not self.manage_prs:
+        if not self.auto_merge_reviewed:
             message = "Auto-merge is disabled; waiting for a maintainer to merge this PR manually."
             self._ensure_comment_with_tag(pr, 'copilot:auto-merge-disabled', message)
             results.append(
@@ -367,11 +354,11 @@ class JediMaster:
         mergeable = getattr(pr, 'mergeable', None)
         if mergeable is False:
             self._set_state_label(pr, STATE_BLOCKED)
-            try:
-                comment_body = "@copilot Merge conflicts detected. Resolve conflicts and push updates, then re-request review."
-                pr.create_issue_comment(comment_body)
-            except Exception as exc:
-                self.logger.error(f"Failed to create merge conflict comment on PR #{pr.number}: {exc}")
+            self._ensure_comment_with_tag(
+                pr,
+                'copilot:merge-conflict',
+                "Merge conflicts detected. Resolve conflicts and push updates, then re-request review.",
+            )
             results.append(
                 PRRunResult(
                     repo=repo_full,
@@ -518,7 +505,6 @@ class JediMaster:
 
         metadata = self._collect_pr_metadata(pr)
         classification = self._classify_pr_state(pr, metadata)
-        self.logger.info(f"PR #{pr.number} classified as: {classification}")
         desired_state = classification['state']
         current_state = self._get_state_label(pr)
 
@@ -574,15 +560,10 @@ class JediMaster:
         handler = handler_map.get(current_state)
         if handler:
             try:
-                # Debug logging to help identify the metadata scoping issue
-                self.logger.debug(f"About to call handler for PR #{pr.number} state {current_state}")
-                self.logger.debug(f"Metadata keys: {list(metadata.keys()) if isinstance(metadata, dict) else 'NOT_DICT'}")
                 handler_results = handler(pr, metadata, classification)
                 results.extend(handler_results)
             except Exception as exc:
-                import traceback
                 self.logger.error(f"Handler failure for PR #{pr.number} state {current_state}: {exc}")
-                self.logger.error(f"Full traceback: {traceback.format_exc()}")
                 results.append(
                     PRRunResult(
                         repo=repo_full,
@@ -622,58 +603,11 @@ class JediMaster:
             )
         return results
 
-    # Helper methods for state machine
+    # State machine methods follow after manage_pull_requests
 
     def _remove_merge_attempt_labels(self, pr) -> None:
         try:
             label_iterable = pr.get_labels() if hasattr(pr, 'get_labels') else pr.labels
-            for label in list(label_iterable):
-                name = getattr(label, 'name', '') or ''
-                if name.startswith(MERGE_ATTEMPT_LABEL_PREFIX):
-                    try:
-                        pr.remove_from_labels(name)
-                    except Exception as exc:
-                        self.logger.debug(f"Failed to remove merge attempt label {name} from PR #{pr.number}: {exc}")
-        except Exception as exc:
-            self.logger.error(f"Failed to clean merge attempt labels for PR #{getattr(pr, 'number', '?')}: {exc}")
-    
-    def _close_linked_issues(self, repo, pr_number: int, pr_title: str) -> List[int]:
-        """Close issues that are linked to the merged PR and return list of closed issue numbers."""
-        closed_issues: List[int] = []
-        
-        try:
-            # GraphQL query to find issues that close with this PR
-            query = """
-            query($owner: String!, $name: String!, $number: Int!) {
-              repository(owner: $owner, name: $name) {
-                pullRequest(number: $number) {
-                  closingIssuesReferences(first: 50) {
-                    edges {
-                      node {
-                        number
-                        state
-                        title
-                      }
-                    }
-                  }
-                }
-              }
-            }
-            """
-            
-            variables = {
-                "owner": repo.owner.login,
-                "name": repo.name,
-                "number": pr_number
-            }
-            
-            result = self._graphql_request(query, variables)
-            if "errors" in result:
-                self.logger.error(f"GraphQL errors when fetching linked issues for PR #{pr_number}: {result['errors']}")
-                return closed_issues
-                
-            closing_issues = result["data"]["repository"]["pullRequest"]["closingIssuesReferences"]["edges"]
-            pr_url = f"https://github.com/{repo.full_name}/pull/{pr_number}"
             
             # Close each linked issue
             for edge in closing_issues:
@@ -1062,7 +996,6 @@ class JediMaster:
 
         needs_review = False
         if copilot_review_requested:
-            # If Copilot review is explicitly requested, it needs review regardless of draft status
             needs_review = True
         elif not is_draft and not has_current_approval and not copilot_changes_pending:
             if review_decision == 'REVIEW_REQUIRED':
@@ -1071,40 +1004,15 @@ class JediMaster:
                 needs_review = True
             elif review_decision not in ('APPROVED', 'CHANGES_REQUESTED'):
                 needs_review = True
-        elif not is_draft and has_new_commits and not has_current_approval:
-            # Special case: PR was recently changed from draft to ready (likely Copilot finished)
-            # Check if there are recent commits that might indicate Copilot just finished
-            if last_commit_time:
-                # If last commit was recent (within last hour), assume it needs review
-                import datetime
-                time_since_commit = datetime.datetime.now(datetime.timezone.utc) - last_commit_time
-                if time_since_commit.total_seconds() < 3600:  # 1 hour
-                    needs_review = True
-
-        # Key insight: If a draft PR has human reviewers requested, Copilot likely finished work
-        requested_reviewers = metadata.get('requested_reviewers', [])
-        self.logger.info(f"PR #{pr.number}: draft={is_draft}, reviewers={requested_reviewers}")
-        if is_draft and requested_reviewers:
-            # Draft with human reviewers requested suggests Copilot finished and wants human review
-            human_reviewers = [r for r in requested_reviewers if 'copilot' not in r.lower()]
-            if human_reviewers:
-                needs_review = True
 
         if needs_review:
             reason = 'awaiting_review'
             if last_commit_time:
                 reason += '_after_commit'
-            if copilot_review_requested:
-                reason += '_copilot_requested'
             return {'state': STATE_PENDING_REVIEW, 'reason': reason}
 
-        # Only block for draft if there's no active review request
         if is_draft:
-            if copilot_review_requested:
-                # Draft but review requested - Copilot might be done, treat as pending review
-                return {'state': STATE_PENDING_REVIEW, 'reason': 'copilot_review_on_draft'}
-            else:
-                return {'state': STATE_BLOCKED, 'reason': 'draft'}
+            return {'state': STATE_BLOCKED, 'reason': 'draft'}
 
         if mergeable is False and has_current_approval:
             return {'state': STATE_BLOCKED, 'reason': 'merge_conflict'}
@@ -1175,142 +1083,182 @@ class JediMaster:
                 action='no_files',
             )
 
-        # Return the combined diff content
-        return "\n".join(diff_chunks), None
+        return ''.join(diff_chunks), None
 
-    def _set_state_label(self, pr, state: str) -> None:
-        """Ensure exactly one state label is set on the PR."""
-        # Find the current state label and remove it
-        current_state = None
+        def _mark_pr_ready_for_review(self, pr) -> None:
+                """Mark a draft PR as ready for review via GraphQL."""
+                try:
+                        repo_full = pr.base.repo.full_name
+                        owner, name = repo_full.split('/')
+        repo_full = pr.base.repo.full_name
+        results: List[PRRunResult] = []
+
+        if metadata.get('has_current_approval') and not metadata.get('has_new_commits_since_copilot_review'):
+            self._set_state_label(pr, STATE_READY_TO_MERGE)
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='state_transition',
+                    details='Already approved; moved to ready_to_merge',
+                    state_before=STATE_PENDING_REVIEW,
+                    state_after=STATE_READY_TO_MERGE,
+                    action='mark_ready',
+                )
+            )
+            # Attempt merge immediately with fresh metadata
+            fresh_metadata = self._collect_pr_metadata(pr)
+            results.extend(self._handle_ready_to_merge_state(pr, fresh_metadata))
+            return results
+
+        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
+        diff_content, pre_result = self._fetch_pr_diff(pr, repo_full)
+        if pre_result:
+            results.append(pre_result)
+            return results
+
+        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
+
         try:
-            labels_to_remove = []
-            label_iterable = pr.get_labels() if hasattr(pr, 'get_labels') else pr.labels
-            for label in label_iterable:
-                name = getattr(label, 'name', '') or ''
-                if name.startswith(COPILOT_STATE_LABEL_PREFIX):
-                    if current_state != name:
-                        labels_to_remove.append(name)
-                    current_state = name
-
-            for label_name in labels_to_remove:
-                pr.remove_from_labels(label_name)
+            agent_result = self.pr_decider.evaluate_pr(pr_text)
         except Exception as exc:
-            self.logger.debug(f"Failed to clean existing state labels from PR #{pr.number}: {exc}")
+            self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='error',
+                    details=self._shorten_text(str(exc)),
+                    state_before=STATE_PENDING_REVIEW,
+                    state_after=STATE_PENDING_REVIEW,
+                    action='review_failed',
+                )
+            )
+            return results
 
-        # Apply the desired state label
-        desired = f"{COPILOT_STATE_LABEL_PREFIX}{state}"
-        if current_state == desired:
-            return  # Already set correctly
+        if 'comment' in agent_result:
+            comment_body = f"@copilot {agent_result['comment']}"
+            try:
+                pr.create_review(event='REQUEST_CHANGES', body=comment_body)
+            except Exception as exc:
+                self.logger.error(f"Failed to request changes on PR #{pr.number}: {exc}")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='error',
+                        details=self._shorten_text(str(exc)),
+                        state_before=STATE_PENDING_REVIEW,
+                        state_after=STATE_PENDING_REVIEW,
+                        action='request_changes_failed',
+                    )
+                )
+                return results
 
-        try:
-            pr.add_to_labels(desired)
-        except Exception as exc:
-            self.logger.error(f"Failed to apply state label {desired} to PR #{pr.number}: {exc}")
+            self._set_state_label(pr, STATE_CHANGES_REQUESTED)
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='changes_requested',
+                    details=self._shorten_text(comment_body),
+                    state_before=STATE_PENDING_REVIEW,
+                    state_after=STATE_CHANGES_REQUESTED,
+                    action='request_changes',
+                )
+            )
+            return results
 
-    def _remove_merge_attempt_labels(self, pr) -> None:
-        try:
-            label_iterable = pr.get_labels() if hasattr(pr, 'get_labels') else pr.labels
-            for label in list(label_iterable):
-                name = getattr(label, 'name', '') or ''
-                if name.startswith(MERGE_ATTEMPT_LABEL_PREFIX):
-                    try:
-                        pr.remove_from_labels(name)
-                    except Exception as exc:
-                        self.logger.debug(f"Failed to remove merge attempt label {name} from PR #{pr.number}: {exc}")
-        except Exception as exc:
-            self.logger.error(f"Failed to clean merge attempt labels for PR #{getattr(pr, 'number', '?')}: {exc}")
+        if agent_result.get('decision') == 'accept':
+            if metadata.get('is_draft'):
+                self._mark_pr_ready_for_review(pr)
+                pr.update()
+            try:
+                pr.create_review(event='APPROVE', body='Automatically approved by JediMaster.')
+            except Exception as exc:
+                self.logger.error(f"Failed to approve PR #{pr.number}: {exc}")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='error',
+                        details=self._shorten_text(str(exc)),
+                        state_before=STATE_PENDING_REVIEW,
+                        state_after=STATE_PENDING_REVIEW,
+                        action='approve_failed',
+                    )
+                )
+                return results
 
-    def _get_issue_id_and_bot_id(self, repo_owner: str, repo_name: str, issue_number: int) -> tuple:
-        """Get issue ID and bot ID for GraphQL assignment."""
-        query = """
-        query($owner: String!, $name: String!, $issueNumber: Int!) {
-          repository(owner: $owner, name: $name) {
-            issue(number: $issueNumber) {
-              id
-            }
-            suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
-              nodes {
-                login
-                __typename
-                ... on Bot {
-                  id
-                }
-                ... on User {
-                  id
-                }
-              }
-            }
-          }
-        }
-        """
-        variables = {
-            "owner": repo_owner,
-            "name": repo_name,
-            "issueNumber": issue_number
-        }
-        try:
-            result = self._graphql_request(query, variables)
-            if "errors" in result:
-                self.logger.error(f"GraphQL errors: {result['errors']}")
-                return None, None, f"GraphQL errors: {result['errors']}"
-            data = result["data"]
-            issue_id = data["repository"]["issue"]["id"]
-            bot_id = None
-            suggested_actors = data["repository"]["suggestedActors"]["nodes"]
-            for actor in suggested_actors:
-                login = actor["login"]
-                if login == "copilot-swe-agent" or "copilot" in login.lower():
-                    bot_id = actor["id"]
-                    self.logger.info(f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})")
-                    break
-            if not bot_id:
-                self.logger.warning(f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}")
-                if suggested_actors:
-                    actor_logins = [actor["login"] for actor in suggested_actors]
-                    self.logger.info(f"Available suggested actors: {actor_logins}")
-                else:
-                    self.logger.info("No suggested actors found - Copilot may not be enabled for this repository")
-            return issue_id, bot_id, None
-        except Exception as e:
-            self.logger.error(f"Error getting issue and bot IDs: {e}")
-            return None, None, str(e)
+            self._set_state_label(pr, STATE_READY_TO_MERGE)
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='approved',
+                    details='Auto-approved by JediMaster',
+                    state_before=STATE_PENDING_REVIEW,
+                    state_after=STATE_READY_TO_MERGE,
+                    action='approve',
+                )
+            )
+            fresh_metadata = self._collect_pr_metadata(pr)
+            results.extend(self._handle_ready_to_merge_state(pr, fresh_metadata))
+            return results
 
-    def _assign_issue_via_graphql(self, issue_id: str, bot_id: str) -> tuple:
-        """Assign an issue to a bot using GraphQL mutation."""
-        mutation = """
-        mutation($assignableId: ID!, $actorIds: [ID!]!) {
-          replaceActorsForAssignable(input: {assignableId: $assignableId, actorIds: $actorIds}) {
-            assignable {
-              ... on Issue {
-                id
-                title
-                assignees(first: 10) {
-                  nodes {
-                    login
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        variables = {
-            "assignableId": issue_id,
-            "actorIds": [bot_id]
-        }
-        try:
-            result = self._graphql_request(mutation, variables)
-            if "errors" in result:
-                self.logger.error(f"GraphQL mutation errors: {result['errors']}")
-                return False, f"GraphQL mutation errors: {result['errors']}"
-            assignees = result["data"]["replaceActorsForAssignable"]["assignable"]["assignees"]["nodes"]
-            assigned_logins = [assignee["login"] for assignee in assignees]
-            self.logger.info(f"Successfully assigned issue. Current assignees: {assigned_logins}")
-            return True, None
-        except Exception as e:
-            self.logger.error(f"Error assigning issue via GraphQL: {e}")
-            return False, str(e)
-
+        results.append(
+            PRRunResult(
+                repo=repo_full,
+                pr_number=pr.number,
+                title=pr.title,
+                status='unknown',
+                details=self._shorten_text(str(agent_result)),
+                state_before=STATE_PENDING_REVIEW,
+                state_after=STATE_PENDING_REVIEW,
+                action='review_unknown',
+            )
+        )
+        return results
+                        query = """
+                        query($owner: String!, $name: String!, $number: Int!) {
+                            repository(owner: $owner, name: $name) {
+                                pullRequest(number: $number) {
+                                    id
+                                    isDraft
+                                }
+                            }
+                        }
+                        """
+                        variables = {"owner": owner, "name": name, "number": pr.number}
+                        result = self._graphql_request(query, variables)
+                        if 'errors' in result:
+                                self.logger.error(f"GraphQL query error while marking PR #{pr.number} ready: {result['errors']}")
+                                return
+                        pr_id = result['data']['repository']['pullRequest']['id']
+                        is_draft = result['data']['repository']['pullRequest']['isDraft']
+                        if not is_draft:
+                                return
+                        mutation = """
+                        mutation($pullRequestId: ID!) {
+                            markPullRequestReadyForReview(input: {pullRequestId: $pullRequestId}) {
+                                pullRequest {
+                                    isDraft
+                                }
+                            }
+                        }
+                        """
+                        mutation_vars = {"pullRequestId": pr_id}
+                        mutation_result = self._graphql_request(mutation, mutation_vars)
+                        if 'errors' in mutation_result:
+                                self.logger.error(f"GraphQL mutation error while marking PR #{pr.number} ready: {mutation_result['errors']}")
+                except Exception as exc:
+                        self.logger.error(f"Failed to mark PR #{getattr(pr, 'number', '?')} as ready for review: {exc}")
     def fetch_issues(self, repo_name: str, batch_size: int = 15):
         """Fetch open issues that haven't been processed yet.
         
@@ -1474,7 +1422,7 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, process_prs: bool = False, auto_merge_reviewed: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.github = Github(github_token)
@@ -1482,7 +1430,8 @@ class JediMaster:
         self.pr_decider = PRDeciderAgent(azure_foundry_endpoint)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
-        self.manage_prs = manage_prs
+        self.process_prs = process_prs
+        self.auto_merge_reviewed = auto_merge_reviewed
         self.logger = self._setup_logger()
         # Get merge retry limit from environment
         self.merge_max_retries = self._get_merge_max_retries()
@@ -1686,8 +1635,8 @@ class JediMaster:
         for repo_name in repo_names:
             self.logger.info(f"Processing repository: {repo_name}")
             try:
-                if self.manage_prs:
-                    pr_results.extend(self.manage_pull_requests(repo_name))
+                if self.process_prs:
+                    pr_results.extend(self.process_pull_requests(repo_name))
                 else:
                     # Only process issues if not doing PR processing
                     issues = self.fetch_issues(repo_name)
@@ -1698,7 +1647,7 @@ class JediMaster:
                         all_results.append(result)
             except Exception as e:
                 self.logger.error(f"Failed to process repository {repo_name}: {e}")
-                if not self.manage_prs:  # Only add issue error results when processing issues
+                if not self.process_prs:  # Only add issue error results when processing issues
                     all_results.append(IssueResult(
                         repo=repo_name,
                         issue_number=0,
@@ -1709,7 +1658,7 @@ class JediMaster:
                     ))
         
         # Calculate statistics based on what was actually processed
-        if self.manage_prs:
+        if self.process_prs:
             # When processing PRs, create a minimal report focused on PR results
             report = ProcessingReport(
                 total_issues=0,  # No issues processed
@@ -1887,8 +1836,10 @@ def main():
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
 
-    parser.add_argument('--manage-prs', action='store_true',
-                       help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
+    parser.add_argument('--process-prs', action='store_true',
+                       help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
+    parser.add_argument('--auto-merge-reviewed', action='store_true',
+                       help='Automatically merge reviewed PRs with no conflicts')
 
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
@@ -1965,7 +1916,8 @@ def main():
             azure_foundry_endpoint,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
-            manage_prs=args.manage_prs
+            process_prs=args.process_prs,
+            auto_merge_reviewed=args.auto_merge_reviewed
         )
 
         # Process based on input type
@@ -1978,14 +1930,12 @@ def main():
             report = jedimaster.process_repositories(args.repositories)
             repo_names = args.repositories
 
-        # Process repositories
-        if args.manage_prs:
-            print("Processing pull requests through state machine...")
-        else:
-            print("Processing issues for assignment...")
-        
-        # All repository and issue processing is handled in process_repositories now
-        # based on the manage_prs flag
+        auto_merge_results: List[PRRunResult] = []
+        if args.auto_merge_reviewed:
+            print("\nChecking for reviewed PRs to auto-merge...")
+            for repo_name in repo_names:
+                auto_merge_results.extend(jedimaster.merge_reviewed_pull_requests(repo_name))
+            jedimaster.print_pr_results("AUTO-MERGE RESULTS", auto_merge_results)
 
         # Save and display results
         if args.save_report:
@@ -1995,11 +1945,15 @@ def main():
             print("\nReport not saved (use --save-report to save to file)")
         summary_context = "issues"
         summary_pr_results: Optional[List[PRRunResult]] = None
-        # Display results based on mode
-        if args.manage_prs:
-            jedimaster.print_pr_results("PULL REQUEST MANAGEMENT RESULTS", report.pr_results if hasattr(report, 'pr_results') else [])
-        else:
-            jedimaster.print_summary(report, context="issues")
+        if args.process_prs:
+            summary_context = "prs"
+            summary_pr_results = report.pr_results
+        elif args.auto_merge_reviewed:
+            summary_context = "merge"
+            summary_pr_results = auto_merge_results
+        jedimaster.print_summary(report, context=summary_context, pr_results=summary_pr_results)
+        if args.process_prs:
+            jedimaster.print_pr_results("PULL REQUEST PROCESSING RESULTS", report.pr_results)
         return 0
 
     except Exception as e:

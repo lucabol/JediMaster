@@ -199,10 +199,8 @@ def main():
                        help='Only add labels to issues, do not assign them to Copilot')
     parser.add_argument('--use-file-filter', action='store_true',
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
-    parser.add_argument('--process-prs', action='store_true',
-                       help='Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)')
-    parser.add_argument('--auto-merge-reviewed', action='store_true',
-                       help='Automatically merge reviewed PRs with no conflicts')
+    parser.add_argument('--manage-prs', action='store_true',
+                       help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--similarity-threshold', type=float, nargs='?', const=0.9, metavar='THRESHOLD',
@@ -303,8 +301,8 @@ def main():
         azure_foundry_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
-        process_prs=args.process_prs,
-        auto_merge_reviewed=getattr(args, 'auto_merge_reviewed', False)
+        manage_prs=getattr(args, 'manage_prs', False)
+
     )
 
     # Show which mode we're using
@@ -378,11 +376,11 @@ def main():
         print(f"\nReport not saved (use --save-report to save to file)")
 
     # Print summary
-    summary_context = "prs" if args.process_prs else "issues"
+    summary_context = "prs" if getattr(args, 'manage_prs', False) else "issues"
     jedimaster.print_summary(report, context=summary_context)
 
-    if args.process_prs:
-        jedimaster.print_pr_results("PULL REQUEST PROCESSING RESULTS", report.pr_results)
+
+
 
 if __name__ == '__main__':
     main()
