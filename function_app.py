@@ -182,16 +182,32 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             logging.error(f"[AutomateRepos] Unexpected failure for {repo_full}: {e}\n{traceback.format_exc()}")
             summary['errors'].append({'repo': repo_full, 'stage': 'generic', 'error': str(e)})
         # Optionally log per repo block debug
-        logging.debug(f"[AutomateRepos] Repo block detail: {json.dumps(repo_block)[:800]}")
+        try:
+            repo_block_json = json.dumps(repo_block, indent=2)
+            if len(repo_block_json) <= 2000:
+                logging.debug(f"[AutomateRepos] Repo block detail: {repo_block_json}")
+            else:
+                logging.debug(f"[AutomateRepos] Repo block detail (truncated): {repo_block_json[:1500]}...")
+        except Exception:
+            logging.debug(f"[AutomateRepos] Repo block detail: Failed to serialize")
 
     end_ts = datetime.utcnow().isoformat()
     summary['end'] = end_ts
     logging.info(f"[AutomateRepos] Completed run. Repos={summary['repos_processed']} errors={len(summary['errors'])}")
-    # Compact summary log
+    # Complete summary log - split into chunks if very large
     try:
-        logging.info("[AutomateRepos] Summary JSON: %s", json.dumps(summary)[:4000])
-    except Exception:
-        pass
+        summary_json = json.dumps(summary, indent=2)
+        if len(summary_json) <= 8000:
+            logging.info("[AutomateRepos] Summary JSON: %s", summary_json)
+        else:
+            # For very large summaries, log in chunks
+            chunk_size = 7000  # Leave room for log prefix
+            chunks = [summary_json[i:i+chunk_size] for i in range(0, len(summary_json), chunk_size)]
+            logging.info("[AutomateRepos] Summary JSON (part 1/%d): %s", len(chunks), chunks[0])
+            for i, chunk in enumerate(chunks[1:], 2):
+                logging.info("[AutomateRepos] Summary JSON (part %d/%d): %s", i, len(chunks), chunk)
+    except Exception as e:
+        logging.error("[AutomateRepos] Failed to log summary JSON: %s", str(e))
 
 @app.function_name(name="ResetRepositories")
 @app.route(route="reset", methods=[func.HttpMethod.POST], auth_level=func.AuthLevel.FUNCTION)
