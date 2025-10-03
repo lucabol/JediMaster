@@ -1061,8 +1061,15 @@ class JediMaster:
             return {'state': STATE_READY_TO_MERGE, 'reason': 'ready'}
 
         needs_review = False
+        requested_reviewers = metadata.get('requested_reviewers', [])
+        self.logger.info(f"PR #{pr.number}: draft={is_draft}, reviewers={requested_reviewers}")
+        
         if copilot_review_requested:
             # If Copilot review is explicitly requested, it needs review regardless of draft status
+            needs_review = True
+        elif requested_reviewers and not is_draft:
+            # If any reviewers are requested on a non-draft PR, it needs review
+            # This handles the case where a blocked PR gets a review re-request
             needs_review = True
         elif not is_draft and not has_current_approval and not copilot_changes_pending:
             if review_decision == 'REVIEW_REQUIRED':
@@ -1082,8 +1089,6 @@ class JediMaster:
                     needs_review = True
 
         # Key insight: If a draft PR has human reviewers requested, Copilot likely finished work
-        requested_reviewers = metadata.get('requested_reviewers', [])
-        self.logger.info(f"PR #{pr.number}: draft={is_draft}, reviewers={requested_reviewers}")
         if is_draft and requested_reviewers:
             # Draft with human reviewers requested suggests Copilot finished and wants human review
             human_reviewers = [r for r in requested_reviewers if 'copilot' not in r.lower()]
