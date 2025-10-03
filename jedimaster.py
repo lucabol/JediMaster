@@ -8,7 +8,7 @@ import os
 import json
 import logging
 from collections import Counter
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 import argparse
@@ -70,6 +70,7 @@ class ProcessingReport:
 
 COPILOT_STATE_LABEL_PREFIX = "copilot-state:"
 MERGE_ATTEMPT_LABEL_PREFIX = "merge-attempt-"
+HUMAN_ESCALATION_LABEL = "copilot-human-review"
 
 STATE_INTAKE = "intake"
 STATE_PENDING_REVIEW = "pending_review"
@@ -516,6 +517,34 @@ class JediMaster:
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
 
+        if self._has_label(pr, HUMAN_ESCALATION_LABEL):
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='human_escalated',
+                    details='Escalated to human reviewer (label present).',
+                    action='skip_human_escalation',
+                )
+            )
+            return results
+
+        should_escalate, comment_count = self._should_escalate_for_human(pr)
+        if should_escalate:
+            self._escalate_pr_to_human(pr, comment_count)
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='human_escalated',
+                    details=f'Escalated to human reviewer after {comment_count} comments.',
+                    action='apply_human_escalation',
+                )
+            )
+            return results
+
         metadata = self._collect_pr_metadata(pr)
         classification = self._classify_pr_state(pr, metadata)
         self.logger.info(f"PR #{pr.number} classified as: {classification}")
@@ -788,6 +817,7 @@ class JediMaster:
             'state_transition': 'state transition',
             'blocked': 'blocked ⛔',
             'ready_to_merge': 'ready to merge 🚦',
+            'human_escalated': 'human escalated 🔍',
         }
         return mapping.get(status, status.replace('_', ' '))
 
@@ -890,6 +920,91 @@ class JediMaster:
             pr.create_issue_comment(body)
         except Exception as exc:
             self.logger.error(f"Failed to create tagged comment on PR #{getattr(pr, 'number', '?')}: {exc}")
+
+    def _has_label(self, pr, label_name: str) -> bool:
+        try:
+            label_iterable = pr.get_labels() if hasattr(pr, 'get_labels') else pr.labels
+            for label in label_iterable:
+                if (getattr(label, 'name', '') or '') == label_name:
+                    return True
+        except Exception as exc:
+            self.logger.debug(f"Failed to inspect labels for PR #{getattr(pr, 'number', '?')}: {exc}")
+        return False
+
+    def _collect_back_and_forth_stats(self, pr) -> Tuple[int, set[str]]:
+        events: List[Tuple[Optional[datetime], str]] = []
+
+        def _append_event(created_at, login, body) -> None:
+            if not body or not body.strip():
+                return
+            events.append((created_at, login or ''))
+
+        try:
+            for comment in pr.get_issue_comments():
+                _append_event(getattr(comment, 'created_at', None), getattr(getattr(comment, 'user', None), 'login', ''), getattr(comment, 'body', ''))
+        except Exception as exc:
+            self.logger.debug(f"Failed to load issue comments for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        try:
+            for comment in pr.get_review_comments():
+                _append_event(getattr(comment, 'created_at', None), getattr(getattr(comment, 'user', None), 'login', ''), getattr(comment, 'body', ''))
+        except Exception as exc:
+            self.logger.debug(f"Failed to load review comments for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        try:
+            for review in pr.get_reviews():
+                created = getattr(review, 'submitted_at', None) or getattr(review, 'created_at', None)
+                _append_event(created, getattr(getattr(review, 'user', None), 'login', ''), getattr(review, 'body', ''))
+        except Exception as exc:
+            self.logger.debug(f"Failed to load reviews for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        events = [event for event in events if event[0] is not None]
+        events.sort(key=lambda item: item[0])
+
+        count = 0
+        participants: set[str] = set()
+        for _, login in events:
+            normalized = (login or '').lower()
+            participant = 'copilot' if 'copilot' in normalized else 'human'
+            participants.add(participant)
+            count += 1
+
+        return count, participants
+
+    def _should_escalate_for_human(self, pr) -> Tuple[bool, int]:
+        count, participants = self._collect_back_and_forth_stats(pr)
+        if count > 9 and {'copilot', 'human'}.issubset(participants):
+            return True, count
+        return False, count
+
+    def _escalate_pr_to_human(self, pr, comment_count: int) -> None:
+        message = (
+            "This PR has had more than nine back-and-forth comments between Copilot and contributors. "
+            "Escalating to a human reviewer for follow-up."
+        )
+        try:
+            repo = pr.base.repo
+            self._ensure_label_exists(
+                repo,
+                HUMAN_ESCALATION_LABEL,
+                "8b949e",
+                "Copilot handed off to a human reviewer after extensive discussion.",
+            )
+        except Exception as exc:
+            self.logger.error(f"Failed to ensure human escalation label for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
+            try:
+                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+            except Exception as exc:
+                self.logger.error(f"Failed to apply human escalation label to PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        # Include comment count to give maintainers quick context.
+        self._ensure_comment_with_tag(
+            pr,
+            'copilot:human-escalation',
+            f"{message}\nDetected comment exchanges: {comment_count}.",
+        )
 
     def _collect_pr_metadata(self, pr) -> Dict[str, Any]:
         """Collect key PR metadata needed for state classification."""
