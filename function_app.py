@@ -106,14 +106,13 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         'errors': []
     }
 
-    # Instantiate core orchestrator once; we'll reuse for all repos. We will toggle PR mode per path.
+    # Instantiate core orchestrator for issue processing (always with manage_prs=False)
     jedi = JediMaster(
         github_token,
         azure_foundry_endpoint,
         just_label=just_label_flag,
         use_topic_filter=not use_file_filter,
-        process_prs=False,  # we'll call PR / merge flows explicitly
-        auto_merge_reviewed=auto_merge_flag
+        manage_prs=False  # Issue processing should always be separate from PR processing
     )
 
     for repo_full in repo_names:
@@ -150,7 +149,15 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             # 3. PR management via state machine
             if process_prs_flag:
                 try:
-                    pr_results = jedi.manage_pull_requests(repo_full)
+                    # Create a separate JediMaster instance for PR processing with appropriate manage_prs setting
+                    pr_jedi = JediMaster(
+                        github_token,
+                        azure_foundry_endpoint,
+                        just_label=just_label_flag,
+                        use_topic_filter=not use_file_filter,
+                        manage_prs=auto_merge_flag  # enable auto-merge when AUTO_MERGE is true
+                    )
+                    pr_results = pr_jedi.manage_pull_requests(repo_full)
                     pr_dicts = [asdict(r) for r in pr_results]
                     repo_block['pr_management'] = pr_dicts
 
