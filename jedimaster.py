@@ -1591,15 +1591,42 @@ class JediMaster:
         """
         try:
             rate_limit = self.github.get_rate_limit()
-            core_remaining = rate_limit.core.remaining
-            core_limit = rate_limit.core.limit
+            
+            # Debug logging to understand the rate limit object structure
+            self.logger.debug(f"Rate limit object type: {type(rate_limit)}")
+            self.logger.debug(f"Rate limit object attributes: {dir(rate_limit)}")
+            
+            # Handle different rate limit object structures
+            if hasattr(rate_limit, 'core'):
+                # New structure
+                self.logger.info("Using rate_limit.core structure")
+                core_remaining = rate_limit.core.remaining
+                core_limit = rate_limit.core.limit
+                reset_time = rate_limit.core.reset
+                self.logger.debug(f"Core rate limit: {core_remaining}/{core_limit}, reset: {reset_time}")
+            else:
+                # Fallback to older structure or direct attributes
+                self.logger.info("Using fallback rate limit structure")
+                core_remaining = getattr(rate_limit, 'remaining', getattr(rate_limit, 'limit', 5000) - getattr(rate_limit, 'used', 0))
+                core_limit = getattr(rate_limit, 'limit', 5000)
+                reset_time = getattr(rate_limit, 'reset', None)
+                self.logger.debug(f"Fallback rate limit: {core_remaining}/{core_limit}, reset: {reset_time}")
+            
+            # Log the raw values we extracted
+            self.logger.info(f"GitHub API rate limit check: {core_remaining}/{core_limit} remaining")
             
             # Consider it rate limited if we have less than 10% remaining
             rate_limit_threshold = max(10, core_limit * 0.1)
             
             if core_remaining <= rate_limit_threshold:
-                reset_time = rate_limit.core.reset.strftime('%H:%M:%S')
-                return True, f"Rate limit: {core_remaining}/{core_limit} remaining, resets at {reset_time}"
+                if reset_time:
+                    try:
+                        reset_str = reset_time.strftime('%H:%M:%S')
+                    except:
+                        reset_str = str(reset_time)
+                    return True, f"Rate limit: {core_remaining}/{core_limit} remaining, resets at {reset_str}"
+                else:
+                    return True, f"Rate limit: {core_remaining}/{core_limit} remaining"
             
             return False, f"Rate limit OK: {core_remaining}/{core_limit} remaining"
             

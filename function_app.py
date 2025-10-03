@@ -4,6 +4,9 @@ from collections import Counter
 from datetime import datetime
 from dataclasses import asdict
 
+# Ensure logging is configured for Azure Functions
+logging.basicConfig(level=logging.INFO)
+
 from jedimaster import JediMaster
 from creator import CreatorAgent
 from reset_utils import reset_repository
@@ -123,26 +126,36 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     )
 
     # Check initial rate limit status
-    is_rate_limited, rate_status = jedi._check_rate_limit_status()
-    summary['rate_limit_info']['initial'] = rate_status
-    logging.info(f"[AutomateRepos] Initial rate limit status: {rate_status}")
-    
-    if is_rate_limited:
-        logging.warning("[AutomateRepos] Starting with limited GitHub API quota - reducing batch size")
-        batch_size = min(batch_size, 3)
+    logging.info("[AutomateRepos] Checking initial GitHub API rate limit status...")
+    try:
+        is_rate_limited, rate_status = jedi._check_rate_limit_status()
+        summary['rate_limit_info']['initial'] = rate_status
+        logging.info(f"[AutomateRepos] Initial rate limit status: {rate_status}")
+        
+        if is_rate_limited:
+            logging.warning("[AutomateRepos] Starting with limited GitHub API quota - reducing batch size")
+            batch_size = min(batch_size, 3)
+    except Exception as e:
+        logging.error(f"[AutomateRepos] Failed to check initial rate limit: {e}")
+        summary['rate_limit_info']['initial'] = f"Check failed: {str(e)}"
 
     for repo_full in repo_names:
         logging.info(f"[AutomateRepos] Processing repository {repo_full}")
         repo_block = {'repo': repo_full}
         
         # Check rate limit before processing each repo
-        is_rate_limited, rate_status = jedi._check_rate_limit_status()
-        logging.info(f"[AutomateRepos] Rate limit before {repo_full}: {rate_status}")
-        
-        if is_rate_limited:
-            logging.warning(f"[AutomateRepos] Rate limit reached, skipping remaining repositories")
-            summary['errors'].append({'repo': repo_full, 'stage': 'rate_limit', 'error': 'GitHub API rate limit reached'})
-            break
+        logging.info(f"[AutomateRepos] Checking rate limit before processing {repo_full}...")
+        try:
+            is_rate_limited, rate_status = jedi._check_rate_limit_status()
+            logging.info(f"[AutomateRepos] Rate limit before {repo_full}: {rate_status}")
+            
+            if is_rate_limited:
+                logging.warning(f"[AutomateRepos] Rate limit reached, skipping remaining repositories")
+                summary['errors'].append({'repo': repo_full, 'stage': 'rate_limit', 'error': 'GitHub API rate limit reached'})
+                break
+        except Exception as e:
+            logging.error(f"[AutomateRepos] Failed to check rate limit for {repo_full}: {e}")
+            # Continue processing despite rate limit check failure
         
         try:
             # 1. Optional issue creation
@@ -236,9 +249,14 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             logging.debug(f"[AutomateRepos] Repo block detail: Failed to serialize")
 
     # Check final rate limit status
-    is_rate_limited, rate_status = jedi._check_rate_limit_status()
-    summary['rate_limit_info']['final'] = rate_status
-    logging.info(f"[AutomateRepos] Final rate limit status: {rate_status}")
+    logging.info("[AutomateRepos] Checking final GitHub API rate limit status...")
+    try:
+        is_rate_limited, rate_status = jedi._check_rate_limit_status()
+        summary['rate_limit_info']['final'] = rate_status
+        logging.info(f"[AutomateRepos] Final rate limit status: {rate_status}")
+    except Exception as e:
+        logging.error(f"[AutomateRepos] Failed to check final rate limit: {e}")
+        summary['rate_limit_info']['final'] = f"Check failed: {str(e)}"
 
     end_ts = datetime.utcnow().isoformat()
     summary['end'] = end_ts
