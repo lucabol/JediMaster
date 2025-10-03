@@ -1,5 +1,5 @@
 import azure.functions as func
-import logging, os, json, traceback
+import logging, os, json, traceback, time
 from collections import Counter
 from datetime import datetime
 from dataclasses import asdict
@@ -22,6 +22,8 @@ app = func.FunctionApp()
 # AUTO_MERGE: if '1' or 'true', attempt auto merge of approved PRs
 # JUST_LABEL: if '1' or 'true', only label issues (do not assign)
 # USE_FILE_FILTER: if '1' use .coding_agent file instead of topic filter
+# BATCH_SIZE: number of PRs/issues to process per run (default: 5)
+# RATE_LIMIT_DELAY: delay in seconds between processing items (default: 2)
 
 DEFAULT_CRON = "0 0 */6 * * *"  # every 6 hours
 
@@ -91,10 +93,14 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     auto_merge_flag = os.getenv('AUTO_MERGE', '1').lower() in ('1', 'true', 'yes')
     just_label_flag = os.getenv('JUST_LABEL', '1').lower() in ('1', 'true', 'yes')
     use_file_filter = os.getenv('USE_FILE_FILTER', '0').lower() in ('1', 'true', 'yes')
+    
+    # Rate limiting controls
+    batch_size = int(os.getenv('BATCH_SIZE', '5'))  # Reduced from default 15 to 5
+    rate_limit_delay = float(os.getenv('RATE_LIMIT_DELAY', '2.0'))  # 2 second delay between items
 
     logging.info(
-        "[AutomateRepos] Config: repos=%s create_issues=%s count=%s similarity_mode=%s threshold=%s process_prs=%s auto_merge=%s just_label=%s use_file_filter=%s",
-        repo_names, create_issues_flag, create_count, "openai" if use_openai_similarity else "local", similarity_threshold, process_prs_flag, auto_merge_flag, just_label_flag, use_file_filter
+        "[AutomateRepos] Config: repos=%s create_issues=%s count=%s similarity_mode=%s threshold=%s process_prs=%s auto_merge=%s just_label=%s use_file_filter=%s batch_size=%s delay=%ss",
+        repo_names, create_issues_flag, create_count, "openai" if use_openai_similarity else "local", similarity_threshold, process_prs_flag, auto_merge_flag, just_label_flag, use_file_filter, batch_size, rate_limit_delay
     )
 
     summary = {
@@ -103,7 +109,8 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         'issue_reports': [],  # per repo issue stats
         'issue_creation': [],  # per repo created issues
         'pr_management': [],   # per repo PR state-machine results
-        'errors': []
+        'errors': [],
+        'rate_limit_info': {}
     }
 
     # Instantiate core orchestrator for issue processing (always with manage_prs=False)
@@ -115,9 +122,28 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         manage_prs=False  # Issue processing should always be separate from PR processing
     )
 
+    # Check initial rate limit status
+    is_rate_limited, rate_status = jedi._check_rate_limit_status()
+    summary['rate_limit_info']['initial'] = rate_status
+    logging.info(f"[AutomateRepos] Initial rate limit status: {rate_status}")
+    
+    if is_rate_limited:
+        logging.warning("[AutomateRepos] Starting with limited GitHub API quota - reducing batch size")
+        batch_size = min(batch_size, 3)
+
     for repo_full in repo_names:
         logging.info(f"[AutomateRepos] Processing repository {repo_full}")
         repo_block = {'repo': repo_full}
+        
+        # Check rate limit before processing each repo
+        is_rate_limited, rate_status = jedi._check_rate_limit_status()
+        logging.info(f"[AutomateRepos] Rate limit before {repo_full}: {rate_status}")
+        
+        if is_rate_limited:
+            logging.warning(f"[AutomateRepos] Rate limit reached, skipping remaining repositories")
+            summary['errors'].append({'repo': repo_full, 'stage': 'rate_limit', 'error': 'GitHub API rate limit reached'})
+            break
+        
         try:
             # 1. Optional issue creation
             if create_issues_flag:
@@ -127,6 +153,10 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                     repo_block['created_issues'] = created
                     summary['issue_creation'].append({'repo': repo_full, 'created': created})
                     logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full}")
+                    
+                    # Rate limit delay after issue creation
+                    if rate_limit_delay > 0:
+                        time.sleep(rate_limit_delay)
                 except Exception as e:
                     logging.error(f"[AutomateRepos] Issue creation failed for {repo_full}: {e}")
                     summary['errors'].append({'repo': repo_full, 'stage': 'create_issues', 'error': str(e)})
@@ -143,6 +173,10 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 }
                 summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
                 logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
+                
+                # Rate limit delay after issue processing
+                if rate_limit_delay > 0:
+                    time.sleep(rate_limit_delay)
             except Exception as e:
                 logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
                 summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
@@ -157,7 +191,8 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                         use_topic_filter=not use_file_filter,
                         manage_prs=auto_merge_flag  # enable auto-merge when AUTO_MERGE is true
                     )
-                    pr_results = pr_jedi.manage_pull_requests(repo_full)
+                    # Use smaller batch size for PR processing to avoid rate limits
+                    pr_results = pr_jedi.manage_pull_requests(repo_full, batch_size=batch_size)
                     pr_dicts = [asdict(r) for r in pr_results]
                     repo_block['pr_management'] = pr_dicts
 
@@ -174,13 +209,22 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                         repo_full,
                         dict(status_counter)
                     )
+                    
+                    # Rate limit delay after PR processing
+                    if rate_limit_delay > 0 and pr_results:
+                        time.sleep(rate_limit_delay)
                 except Exception as e:
                     logging.error(f"[AutomateRepos] PR management failed for {repo_full}: {e}")
                     summary['errors'].append({'repo': repo_full, 'stage': 'pr_management', 'error': str(e)})
             summary['repos_processed'] += 1
+            
         except Exception as e:
             logging.error(f"[AutomateRepos] Unexpected failure for {repo_full}: {e}\n{traceback.format_exc()}")
             summary['errors'].append({'repo': repo_full, 'stage': 'generic', 'error': str(e)})
+        
+        # Rate limit delay between repositories
+        if rate_limit_delay > 0 and repo_full != repo_names[-1]:  # Don't delay after last repo
+            time.sleep(rate_limit_delay)
         # Optionally log per repo block debug
         try:
             repo_block_json = json.dumps(repo_block, indent=2)
@@ -190,6 +234,11 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 logging.debug(f"[AutomateRepos] Repo block detail (truncated): {repo_block_json[:1500]}...")
         except Exception:
             logging.debug(f"[AutomateRepos] Repo block detail: Failed to serialize")
+
+    # Check final rate limit status
+    is_rate_limited, rate_status = jedi._check_rate_limit_status()
+    summary['rate_limit_info']['final'] = rate_status
+    logging.info(f"[AutomateRepos] Final rate limit status: {rate_status}")
 
     end_ts = datetime.utcnow().isoformat()
     summary['end'] = end_ts
