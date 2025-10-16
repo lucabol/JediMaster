@@ -96,29 +96,41 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
             ValueError: If agent returns empty response
         """
         import asyncio
+        import traceback
         from agent_framework import ChatAgent
         
         # Add small delay to avoid rate limiting
         await asyncio.sleep(0.5)
         
-        # Create fresh credential and client for each agent run
-        async with (
-            DefaultAzureCredential() as credential,
-            ChatAgent(
-                chat_client=AzureAIAgentClient(async_credential=credential),
-                instructions=self.system_prompt,
-                model=self.model
-            ) as agent
-        ):
-            result = await agent.run(prompt)
-            result_text = result.text
-            
-            if not result_text:
-                self.logger.error(f"Agent returned empty response. Full response: {result}")
-                raise ValueError("Agent returned empty response")
-            
-            self.logger.debug(f"Agent raw response: {result_text}")
-            return result_text
+        try:
+            # Create fresh credential and client for each agent run
+            async with (
+                DefaultAzureCredential() as credential,
+                ChatAgent(
+                    chat_client=AzureAIAgentClient(async_credential=credential),
+                    instructions=self.system_prompt,
+                    model=self.model
+                ) as agent
+            ):
+                result = await agent.run(prompt)
+                result_text = result.text
+                
+                if not result_text:
+                    self.logger.error(f"Agent returned empty response. Full response: {result}")
+                    raise ValueError("Agent returned empty response")
+                
+                self.logger.debug(f"Agent raw response: {result_text}")
+                return result_text
+        except Exception as e:
+            # Log full exception details
+            self.logger.error(f"Exception in _run_agent: {type(e).__name__}: {e}")
+            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            # Check if there's more detail in the exception
+            if hasattr(e, '__dict__'):
+                self.logger.error(f"Exception attributes: {e.__dict__}")
+            if hasattr(e, 'args'):
+                self.logger.error(f"Exception args: {e.args}")
+            raise
 
     async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub issue using the Agent Framework."""
@@ -240,29 +252,41 @@ class PRDeciderAgent:
             ValueError: If agent returns empty response
         """
         import asyncio
+        import traceback
         from agent_framework import ChatAgent
         
         # Add small delay to avoid rate limiting
         await asyncio.sleep(0.5)
         
-        # Create fresh credential and client for each agent run
-        async with (
-            DefaultAzureCredential() as credential,
-            ChatAgent(
-                chat_client=AzureAIAgentClient(async_credential=credential),
-                instructions=self.system_prompt,
-                model=self.model
-            ) as agent
-        ):
-            result = await agent.run(prompt)
-            result_text = result.text
-            
-            if not result_text:
-                self.logger.error(f"Agent returned empty response. Full response: {result}")
-                raise ValueError("Agent returned empty response")
-            
-            self.logger.debug(f"Agent raw response: {result_text}")
-            return result_text
+        try:
+            # Create fresh credential and client for each agent run
+            async with (
+                DefaultAzureCredential() as credential,
+                ChatAgent(
+                    chat_client=AzureAIAgentClient(async_credential=credential),
+                    instructions=self.system_prompt,
+                    model=self.model
+                ) as agent
+            ):
+                result = await agent.run(prompt)
+                result_text = result.text
+                
+                if not result_text:
+                    self.logger.error(f"Agent returned empty response. Full response: {result}")
+                    raise ValueError("Agent returned empty response")
+                
+                self.logger.debug(f"Agent raw response: {result_text}")
+                return result_text
+        except Exception as e:
+            # Log full exception details
+            self.logger.error(f"Exception in _run_agent: {type(e).__name__}: {e}")
+            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
+            # Check if there's more detail in the exception
+            if hasattr(e, '__dict__'):
+                self.logger.error(f"Exception attributes: {e.__dict__}")
+            if hasattr(e, 'args'):
+                self.logger.error(f"Exception args: {e.args}")
+            raise
 
     async def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""
