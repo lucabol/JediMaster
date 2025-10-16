@@ -1481,6 +1481,20 @@ class JediMaster:
                 )
             # Evaluate with DeciderAgent
             result = await self.decider.evaluate_issue({'title': issue.title, 'body': issue.body or ''})
+            
+            # Check if agent returned an error
+            if result.get('decision', '').lower() == 'error':
+                self.logger.error(f"Agent evaluation failed for issue #{issue.number}: {result.get('reasoning')}")
+                return IssueResult(
+                    repo=repo_name,
+                    issue_number=issue.number,
+                    title=issue.title,
+                    url=issue.html_url,
+                    status='error',
+                    reasoning=result.get('reasoning'),
+                    error_message=result.get('reasoning')
+                )
+            
             if result.get('decision', '').lower() == 'yes':
                 if not self.just_label:
                     try:

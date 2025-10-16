@@ -143,13 +143,13 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
             self.logger.error(f"Failed to parse agent response as JSON: {e}")
             self.logger.error(f"Raw response that failed to parse: {result_text}")
             return {
-                'decision': 'no',
+                'decision': 'error',
                 'reasoning': 'Error: Could not parse agent response'
             }
         except Exception as e:
             self.logger.error(f"Error calling agent for issue evaluation: {e}")
             return {
-                'decision': 'no',
+                'decision': 'error',
                 'reasoning': f'Error: {str(e)}'
             }
 
