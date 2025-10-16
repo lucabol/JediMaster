@@ -68,8 +68,11 @@ class CreatorAgent:
         Raises:
             ValueError: If agent returns empty response
         """
-        # Import ChatAgent here
+        import asyncio
         from agent_framework import ChatAgent
+        
+        # Add small delay to avoid rate limiting
+        await asyncio.sleep(0.5)
         
         # Create fresh credential and client for each agent run
         async with (
