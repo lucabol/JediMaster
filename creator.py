@@ -54,6 +54,35 @@ class CreatorAgent:
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
+    async def _run_agent(self, agent_name: str, prompt: str) -> str:
+        """
+        Helper method to create and run an agent with the system prompt.
+        
+        Args:
+            agent_name: Name for the agent instance
+            prompt: User prompt to send to the agent
+            
+        Returns:
+            Raw text response from the agent
+            
+        Raises:
+            ValueError: If agent returns empty response
+        """
+        async with self._client.create_agent(
+            name=agent_name,
+            instructions=self.system_prompt,
+            model=self.model
+        ) as agent:
+            result = await agent.run(prompt)
+            result_text = result.text
+            
+            if not result_text:
+                self.logger.error(f"Agent returned empty response. Full response: {result}")
+                raise ValueError("Agent returned empty response")
+            
+            self.logger.debug(f"Agent raw response: {result_text}")
+            return result_text
+
     def _shorten(self, text: Optional[str], limit: int = 80) -> str:
         if not text:
             return ""
@@ -356,84 +385,74 @@ class CreatorAgent:
         )
         
         try:
-            # Create agent for issue suggestion
-            async with self._client.create_agent(
-                name="IssueCreatorAgent",
-                instructions=self.system_prompt,
-                model=self.model
-            ) as agent:
-                result = await agent.run(user_prompt)
-                result_text = result.text
+            # Use helper method to run agent
+            result_text = await self._run_agent("IssueCreatorAgent", user_prompt)
+            
+            self.last_conversation = {
+                "system": self.system_prompt,
+                "user": user_prompt,
+                "llm_response": result_text
+            }
+            
+            try:
+                # Clean up the response text (remove any markdown code blocks)
+                cleaned_response = result_text.strip()
+                if cleaned_response.startswith('```json'):
+                    cleaned_response = cleaned_response[7:]
+                if cleaned_response.endswith('```'):
+                    cleaned_response = cleaned_response[:-3]
+                cleaned_response = cleaned_response.strip()
                 
-                self.last_conversation = {
-                    "system": self.system_prompt,
-                    "user": user_prompt,
-                    "llm_response": result_text
-                }
+                issues = json.loads(cleaned_response)
                 
-                if not result_text:
-                    self.logger.error(f"Agent returned empty response. Full response: {result}")
-                    raise ValueError("Agent returned empty response")
+                self.logger.info(f"Agent response type: {type(issues)}")
+                self.logger.info(f"Agent response content: {issues}")
                 
-                try:
-                    # Clean up the response text (remove any markdown code blocks)
-                    cleaned_response = result_text.strip()
-                    if cleaned_response.startswith('```json'):
-                        cleaned_response = cleaned_response[7:]
-                    if cleaned_response.endswith('```'):
-                        cleaned_response = cleaned_response[:-3]
-                    cleaned_response = cleaned_response.strip()
+                # First check if it's a dict with an 'issues' key (our expected format)
+                if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
+                    self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
+                    return issues['issues'][:max_issues]
+                
+                # Fallback: Expect a JSON array of issues (legacy format)
+                elif isinstance(issues, list):
+                    return issues[:max_issues]
+                elif isinstance(issues, dict):
+                    # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
+                    for key in ['suggestions', 'items']:
+                        if key in issues and isinstance(issues[key], list):
+                            self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
+                            return issues[key][:max_issues]
                     
-                    issues = json.loads(cleaned_response)
+                    # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})
+                    numeric_keys = [k for k in issues.keys() if k.isdigit()]
+                    if numeric_keys:
+                        self.logger.info(f"Found numeric keys: {numeric_keys}")
+                        # Convert to list by sorting the numeric keys
+                        sorted_keys = sorted(numeric_keys, key=int)
+                        numeric_issues = [issues[k] for k in sorted_keys]
+                        return numeric_issues[:max_issues]
                     
-                    self.logger.info(f"Agent response type: {type(issues)}")
-                    self.logger.info(f"Agent response content: {issues}")
+                    # Handle single issue dict with 'title' and 'body'
+                    if 'title' in issues and 'body' in issues:
+                        return [issues]
                     
-                    # First check if it's a dict with an 'issues' key (our expected format)
-                    if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
-                        self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
-                        return issues['issues'][:max_issues]
-                    
-                    # Fallback: Expect a JSON array of issues (legacy format)
-                    elif isinstance(issues, list):
-                        return issues[:max_issues]
-                    elif isinstance(issues, dict):
-                        # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
-                        for key in ['suggestions', 'items']:
-                            if key in issues and isinstance(issues[key], list):
-                                self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
-                                return issues[key][:max_issues]
-                        
-                        # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})
-                        numeric_keys = [k for k in issues.keys() if k.isdigit()]
-                        if numeric_keys:
-                            self.logger.info(f"Found numeric keys: {numeric_keys}")
-                            # Convert to list by sorting the numeric keys
-                            sorted_keys = sorted(numeric_keys, key=int)
-                            numeric_issues = [issues[k] for k in sorted_keys]
-                            return numeric_issues[:max_issues]
-                        
-                        # Handle single issue dict with 'title' and 'body'
-                        if 'title' in issues and 'body' in issues:
-                            return [issues]
-                        
-                        # Check if it's an error response
-                        if 'error' in issues:
-                            self.logger.error(f"Agent returned error: {issues['error']}")
-                            return []
-                    
-                    # If we get here, the format is unexpected
-                    self.logger.error(f"Unexpected agent response format: {type(issues)}")
-                    self.logger.error(f"Response keys: {list(issues.keys()) if isinstance(issues, dict) else 'Not a dict'}")
-                    if isinstance(issues, dict) and len(issues) < 10:  # Only log if not too verbose
-                        self.logger.error(f"Full response content: {issues}")
-                    return []
-                except json.JSONDecodeError as e:
-                    self.logger.error(f"Failed to parse agent response as JSON: {e}")
-                    return []
-                except Exception as e:
-                    self.logger.error(f"Failed to parse agent response: {e}")
-                    return []
+                    # Check if it's an error response
+                    if 'error' in issues:
+                        self.logger.error(f"Agent returned error: {issues['error']}")
+                        return []
+                
+                # If we get here, the format is unexpected
+                self.logger.error(f"Unexpected agent response format: {type(issues)}")
+                self.logger.error(f"Response keys: {list(issues.keys()) if isinstance(issues, dict) else 'Not a dict'}")
+                if isinstance(issues, dict) and len(issues) < 10:  # Only log if not too verbose
+                    self.logger.error(f"Full response content: {issues}")
+                return []
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to parse agent response as JSON: {e}")
+                return []
+            except Exception as e:
+                self.logger.error(f"Failed to parse agent response: {e}")
+                return []
         except Exception as e:
             self.logger.error(f"Error in suggest_issues: {e}")
             return []

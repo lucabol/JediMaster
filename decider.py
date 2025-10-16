@@ -81,46 +81,63 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
+    async def _run_agent(self, agent_name: str, prompt: str) -> str:
+        """
+        Helper method to create and run an agent with the system prompt.
+        
+        Args:
+            agent_name: Name for the agent instance
+            prompt: User prompt to send to the agent
+            
+        Returns:
+            Raw text response from the agent
+            
+        Raises:
+            ValueError: If agent returns empty response
+        """
+        async with self._client.create_agent(
+            name=agent_name,
+            instructions=self.system_prompt,
+            model=self.model
+        ) as agent:
+            result = await agent.run(prompt)
+            result_text = result.text
+            
+            if not result_text:
+                self.logger.error(f"Agent returned empty response. Full response: {result}")
+                raise ValueError("Agent returned empty response")
+            
+            self.logger.debug(f"Agent raw response: {result_text}")
+            return result_text
+
     async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub issue using the Agent Framework."""
         try:
             issue_text = self._format_issue_for_llm(issue_data)
             prompt = f"Please evaluate this GitHub issue:\n\n{issue_text}"
             
-            # Create agent with context manager for automatic cleanup
-            async with self._client.create_agent(
-                name="IssueDeciderAgent",
-                instructions=self.system_prompt,
-                model=self.model
-            ) as agent:
-                result = await agent.run(prompt)
-                result_text = result.text
-                
-                if not result_text:
-                    self.logger.error(f"Agent returned empty response. Full response: {result}")
-                    raise ValueError("Agent returned empty response")
-                
-                self.logger.debug(f"Agent raw response: {result_text}")
-                
-                # Parse JSON response
-                parsed_result = json.loads(result_text)
-                self.logger.debug(f"Parsed agent response: {parsed_result}")
-                
-                if 'decision' not in parsed_result or 'reasoning' not in parsed_result:
-                    raise ValueError("Agent response missing required fields")
-                
-                decision = parsed_result['decision'].lower().strip()
-                if decision not in ['yes', 'no']:
-                    self.logger.warning(f"Unexpected decision value: {decision}, defaulting to 'no'")
-                    decision = 'no'
-                
-                validated_result = {
-                    'decision': decision,
-                    'reasoning': parsed_result['reasoning']
-                }
-                
-                self.logger.debug(f"Agent decision: {decision}, reasoning: {parsed_result['reasoning'][:100]}...")
-                return validated_result
+            # Use helper method to run agent
+            result_text = await self._run_agent("IssueDeciderAgent", prompt)
+            
+            # Parse JSON response
+            parsed_result = json.loads(result_text)
+            self.logger.debug(f"Parsed agent response: {parsed_result}")
+            
+            if 'decision' not in parsed_result or 'reasoning' not in parsed_result:
+                raise ValueError("Agent response missing required fields")
+            
+            decision = parsed_result['decision'].lower().strip()
+            if decision not in ['yes', 'no']:
+                self.logger.warning(f"Unexpected decision value: {decision}, defaulting to 'no'")
+                decision = 'no'
+            
+            validated_result = {
+                'decision': decision,
+                'reasoning': parsed_result['reasoning']
+            }
+            
+            self.logger.debug(f"Agent decision: {decision}, reasoning: {parsed_result['reasoning'][:100]}...")
+            return validated_result
                 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse agent response as JSON: {e}")
@@ -198,33 +215,51 @@ class PRDeciderAgent:
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
+    async def _run_agent(self, agent_name: str, prompt: str) -> str:
+        """
+        Helper method to create and run an agent with the system prompt.
+        
+        Args:
+            agent_name: Name for the agent instance
+            prompt: User prompt to send to the agent
+            
+        Returns:
+            Raw text response from the agent
+            
+        Raises:
+            ValueError: If agent returns empty response
+        """
+        async with self._client.create_agent(
+            name=agent_name,
+            instructions=self.system_prompt,
+            model=self.model
+        ) as agent:
+            result = await agent.run(prompt)
+            result_text = result.text
+            
+            if not result_text:
+                self.logger.error(f"Agent returned empty response. Full response: {result}")
+                raise ValueError("Agent returned empty response")
+            
+            self.logger.debug(f"Agent raw response: {result_text}")
+            return result_text
+
     async def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""
         try:
             prompt = f"Please review this pull request:\n\n{pr_text}"
             
-            # Create agent with context manager for automatic cleanup
-            async with self._client.create_agent(
-                name="PRDeciderAgent",
-                instructions=self.system_prompt,
-                model=self.model
-            ) as agent:
-                result = await agent.run(prompt)
-                result_text = result.text
-                
-                if not result_text:
-                    self.logger.error(f"Agent returned empty response. Full response: {result}")
-                    raise ValueError("Agent returned empty response")
-                
-                self.logger.debug(f"Agent raw response: {result_text}")
-                parsed_result = json.loads(result_text)
-                self.logger.debug(f"Parsed agent response: {parsed_result}")
-                
-                if not (("decision" in parsed_result and parsed_result["decision"] == "accept") or "comment" in parsed_result):
-                    raise ValueError("Agent response missing required fields: must have 'decision' or 'comment'")
-                
-                self.logger.debug(f"Agent PR review result: {parsed_result}")
-                return parsed_result
+            # Use helper method to run agent
+            result_text = await self._run_agent("PRDeciderAgent", prompt)
+            
+            parsed_result = json.loads(result_text)
+            self.logger.debug(f"Parsed agent response: {parsed_result}")
+            
+            if not (("decision" in parsed_result and parsed_result["decision"] == "accept") or "comment" in parsed_result):
+                raise ValueError("Agent response missing required fields: must have 'decision' or 'comment'")
+            
+            self.logger.debug(f"Agent PR review result: {parsed_result}")
+            return parsed_result
                 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse agent response as JSON: {e}")
