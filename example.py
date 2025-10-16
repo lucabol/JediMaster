@@ -5,6 +5,7 @@ Example usage of JediMaster as a library.
 
 import os
 import argparse
+import asyncio
 import base64
 from dotenv import load_dotenv
 from jedimaster import JediMaster
@@ -176,7 +177,7 @@ def populate_repo_with_issues():
         print(f"Found {count} issues, waiting...")
         time.sleep(2)
 
-def main():
+async def main():
     """Example of using JediMaster programmatically."""
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Example usage of JediMaster - Label or assign GitHub issues to Copilot and optionally process PRs')
@@ -203,6 +204,8 @@ def main():
                        help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+    parser.add_argument('--create-issues-count', type=int, default=3,
+                       help='Number of issues to create per repository (default: 3)')
     parser.add_argument('--similarity-threshold', type=float, nargs='?', const=0.9, metavar='THRESHOLD',
                        help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9 with OpenAI embeddings, 0.5 with local similarity)')
 
@@ -291,96 +294,93 @@ def main():
         repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-            creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name)
-            creator.create_issues()
+            async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                await creator.create_issues(max_issues=args.create_issues_count)
         return
 
-    # Initialize JediMaster
-    jedimaster = JediMaster(
+    # Initialize JediMaster with async context manager
+    async with JediMaster(
         github_token,
         azure_foundry_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
         manage_prs=getattr(args, 'manage_prs', False)
+    ) as jedimaster:
+        # Show which mode we're using
+        mode = "labeling only" if just_label else "assigning"
+        filter_method = "topic 'managed-by-coding-agent'" if use_topic_filter else ".coding_agent file"
+        print(f"JediMaster mode: {mode}")
+        print(f"Filtering method: {filter_method}")
 
-    )
+        # Auto-merge reviewed PRs if requested (PR-only operation, skips issue processing)
+        if getattr(args, 'auto_merge_reviewed', False):
+            print("Auto-merge mode: Only checking PRs for auto-merge, skipping issue processing...")
+            
+            # Determine repos to check without processing issues
+            if args.user:
+                username = args.user
+                print(f"Finding repositories for user: {username}")
+                print(f"Looking for repositories with {filter_method}...")
+                try:
+                    user = jedimaster.github.get_user(username)
+                    all_repos = user.get_repos()
+                    repo_names = []
+                    for repo in all_repos:
+                        if jedimaster.use_topic_filter:
+                            if jedimaster._repo_has_topic(repo, "managed-by-coding-agent"):
+                                repo_names.append(repo.full_name)
+                                print(f"Found topic 'managed-by-coding-agent' in repository: {repo.full_name}")
+                        else:
+                            if jedimaster._file_exists_in_repo(repo, ".coding_agent"):
+                                repo_names.append(repo.full_name)
+                                print(f"Found .coding_agent file in repository: {repo.full_name}")
+                    if not repo_names:
+                        filter_desc = "topic 'managed-by-coding-agent'" if jedimaster.use_topic_filter else ".coding_agent file"
+                        print(f"No repositories found with {filter_desc} for user {username}")
+                        return
+                except Exception as e:
+                    print(f"Error accessing user {username}: {e}")
+                    return
+            else:
+                repo_names = args.repositories  # Now using positional argument
+            
+            print(f"Checking {len(repo_names)} repositories for auto-merge candidates...")
+            
+            # Only do auto-merge, no issue processing
+            all_merge_results = []
+            for repo_name in repo_names:
+                merge_results = await jedimaster.merge_reviewed_pull_requests(repo_name)
+                all_merge_results.extend(merge_results)
 
-    # Show which mode we're using
-    mode = "labeling only" if just_label else "assigning"
-    filter_method = "topic 'managed-by-coding-agent'" if use_topic_filter else ".coding_agent file"
-    print(f"JediMaster mode: {mode}")
-    print(f"Filtering method: {filter_method}")
-
-    # Auto-merge reviewed PRs if requested (PR-only operation, skips issue processing)
-    if getattr(args, 'auto_merge_reviewed', False):
-        print("Auto-merge mode: Only checking PRs for auto-merge, skipping issue processing...")
+            jedimaster.print_pr_results("AUTO-MERGE RESULTS", all_merge_results)
+            
+            print(f"\nAuto-merge complete.")
+            return
         
-        # Determine repos to check without processing issues
+        # Normal processing mode (issues/PRs based on other flags)
         if args.user:
             username = args.user
-            print(f"Finding repositories for user: {username}")
+            print(f"Processing user: {username}")
             print(f"Looking for repositories with {filter_method}...")
-            try:
-                user = jedimaster.github.get_user(username)
-                all_repos = user.get_repos()
-                repo_names = []
-                for repo in all_repos:
-                    if jedimaster.use_topic_filter:
-                        if jedimaster._repo_has_topic(repo, "managed-by-coding-agent"):
-                            repo_names.append(repo.full_name)
-                            print(f"Found topic 'managed-by-coding-agent' in repository: {repo.full_name}")
-                    else:
-                        if jedimaster._file_exists_in_repo(repo, ".coding_agent"):
-                            repo_names.append(repo.full_name)
-                            print(f"Found .coding_agent file in repository: {repo.full_name}")
-                if not repo_names:
-                    filter_desc = "topic 'managed-by-coding-agent'" if jedimaster.use_topic_filter else ".coding_agent file"
-                    print(f"No repositories found with {filter_desc} for user {username}")
-                    return
-            except Exception as e:
-                print(f"Error accessing user {username}: {e}")
-                return
+            report = await jedimaster.process_user(username)
+            repo_names = [r.repo for r in report.results] if report.results else []
         else:
             repo_names = args.repositories  # Now using positional argument
-        
-        print(f"Checking {len(repo_names)} repositories for auto-merge candidates...")
-        
-        # Only do auto-merge, no issue processing
-        all_merge_results = []
-        for repo_name in repo_names:
-            merge_results = jedimaster.merge_reviewed_pull_requests(repo_name)
-            all_merge_results.extend(merge_results)
+            print(f"Processing repositories: {repo_names}")
+            report = await jedimaster.process_repositories(repo_names)
 
-        jedimaster.print_pr_results("AUTO-MERGE RESULTS", all_merge_results)
-        
-        print(f"\nAuto-merge complete.")
-        return
-    
-    # Normal processing mode (issues/PRs based on other flags)
-    if args.user:
-        username = args.user
-        print(f"Processing user: {username}")
-        print(f"Looking for repositories with {filter_method}...")
-        report = jedimaster.process_user(username)
-        repo_names = [r.repo for r in report.results] if report.results else []
-    else:
-        repo_names = args.repositories  # Now using positional argument
-        print(f"Processing repositories: {repo_names}")
-        report = jedimaster.process_repositories(repo_names)
+        # Save report
+        if args.save_report:
+            filename = jedimaster.save_report(report, args.output)  # Use --output parameter
+            print(f"\nReport saved to: {filename}")
+        else:
+            print(f"\nReport not saved (use --save-report to save to file)")
 
-    # Save report
-    if args.save_report:
-        filename = jedimaster.save_report(report, args.output)  # Use --output parameter
-        print(f"\nReport saved to: {filename}")
-    else:
-        print(f"\nReport not saved (use --save-report to save to file)")
-
-    # Print summary
-    summary_context = "prs" if getattr(args, 'manage_prs', False) else "issues"
-    jedimaster.print_summary(report, context=summary_context)
-
+        # Print summary
+        summary_context = "prs" if getattr(args, 'manage_prs', False) else "issues"
+        jedimaster.print_summary(report, context=summary_context)
 
 
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
