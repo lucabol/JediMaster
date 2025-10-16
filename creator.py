@@ -43,16 +43,23 @@ class CreatorAgent:
 
     async def __aenter__(self):
         """Async context manager entry."""
+        self.logger.debug("CreatorAgent.__aenter__: Starting")
         self._credential = DefaultAzureCredential()
+        self.logger.debug("CreatorAgent.__aenter__: Created credential")
         self._client = AzureAIAgentClient(async_credential=self._credential)
+        self.logger.debug("CreatorAgent.__aenter__: Created client")
         # Don't need to enter the client - it's not a context manager itself
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
+        self.logger.debug("CreatorAgent.__aexit__: Starting cleanup")
         # Close credential properly
         if self._credential:
+            self.logger.debug("CreatorAgent.__aexit__: Closing credential")
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+            self.logger.debug("CreatorAgent.__aexit__: Credential closed")
+        self.logger.debug("CreatorAgent.__aexit__: Cleanup complete")
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
@@ -68,19 +75,22 @@ class CreatorAgent:
         Raises:
             ValueError: If agent returns empty response
         """
+        self.logger.debug(f"_run_agent: Creating agent '{agent_name}'")
         async with self._client.create_agent(
             name=agent_name,
             instructions=self.system_prompt,
             model=self.model
         ) as agent:
+            self.logger.debug(f"_run_agent: Running agent with prompt (length={len(prompt)})")
             result = await agent.run(prompt)
+            self.logger.debug(f"_run_agent: Agent completed, processing result")
             result_text = result.text
             
             if not result_text:
                 self.logger.error(f"Agent returned empty response. Full response: {result}")
                 raise ValueError("Agent returned empty response")
             
-            self.logger.debug(f"Agent raw response: {result_text}")
+            self.logger.debug(f"Agent raw response length: {len(result_text)}")
             return result_text
 
     def _shorten(self, text: Optional[str], limit: int = 80) -> str:
@@ -374,7 +384,9 @@ class CreatorAgent:
 
     async def suggest_issues(self, max_issues: int = 5) -> List[Dict[str, str]]:
         """Call agent to suggest issues based on repo context. Stores the conversation for inspection."""
+        self.logger.info(f"suggest_issues: Starting with max_issues={max_issues}")
         context = self._gather_repo_context()
+        self.logger.debug(f"suggest_issues: Gathered repo context (length={len(context)})")
         user_prompt = (
             f"Given the following repository context, suggest exactly {max_issues} new GitHub issues. "
             f"You MUST return exactly {max_issues} distinct issues as a JSON object with an 'issues' key containing an array of {max_issues} issue objects. "
@@ -385,8 +397,10 @@ class CreatorAgent:
         )
         
         try:
+            self.logger.info("suggest_issues: Calling _run_agent")
             # Use helper method to run agent
             result_text = await self._run_agent("IssueCreatorAgent", user_prompt)
+            self.logger.info(f"suggest_issues: Got response from agent (length={len(result_text)})")
             
             self.last_conversation = {
                 "system": self.system_prompt,
@@ -395,6 +409,7 @@ class CreatorAgent:
             }
             
             try:
+                self.logger.debug("suggest_issues: Parsing response")
                 # Clean up the response text (remove any markdown code blocks)
                 cleaned_response = result_text.strip()
                 if cleaned_response.startswith('```json'):
@@ -405,8 +420,8 @@ class CreatorAgent:
                 
                 issues = json.loads(cleaned_response)
                 
-                self.logger.info(f"Agent response type: {type(issues)}")
-                self.logger.info(f"Agent response content: {issues}")
+                self.logger.info(f"suggest_issues: Parsed JSON successfully, type={type(issues)}")
+                self.logger.debug(f"Agent response content: {issues}")
                 
                 # First check if it's a dict with an 'issues' key (our expected format)
                 if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
@@ -481,11 +496,15 @@ class CreatorAgent:
 
     async def create_issues(self, max_issues: int = 5) -> List[Dict[str, Any]]:
         """Suggest and open new issues in the repo, checking for duplicates."""
+        self.logger.info(f"create_issues: Starting with max_issues={max_issues}")
         # Get existing issues first
         existing_issues = self._get_existing_issues()
+        self.logger.info(f"create_issues: Found {len(existing_issues)} existing issues")
         
         # Suggest new issues
+        self.logger.info("create_issues: Calling suggest_issues")
         suggested_issues = await self.suggest_issues(max_issues=max_issues)
+        self.logger.info(f"create_issues: Got {len(suggested_issues)} suggested issues")
         if not suggested_issues:
             self.logger.warning("No issues suggested by agent.")
             print("\nISSUE CREATION SUMMARY")
@@ -508,6 +527,7 @@ class CreatorAgent:
         
         # Check for similar issues
         unique_issues, similar_issues_info = await self._check_for_similar_issues(suggested_issues, existing_issues)
+        self.logger.info(f"create_issues: {len(unique_issues)} unique issues after similarity check")
         
         summary_rows = [
             ("Suggested", len(suggested_issues)),
