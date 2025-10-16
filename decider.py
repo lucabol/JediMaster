@@ -95,8 +95,11 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         Raises:
             ValueError: If agent returns empty response
         """
-        # Import ChatAgent here
+        import asyncio
         from agent_framework import ChatAgent
+        
+        # Add small delay to avoid rate limiting
+        await asyncio.sleep(0.5)
         
         # Create fresh credential and client for each agent run
         async with (
@@ -236,8 +239,11 @@ class PRDeciderAgent:
         Raises:
             ValueError: If agent returns empty response
         """
-        # Import ChatAgent here
+        import asyncio
         from agent_framework import ChatAgent
+        
+        # Add small delay to avoid rate limiting
+        await asyncio.sleep(0.5)
         
         # Create fresh credential and client for each agent run
         async with (
