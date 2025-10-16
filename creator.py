@@ -56,7 +56,7 @@ class CreatorAgent:
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
         Helper method to create and run an agent with the system prompt.
-        Creates fresh credential and client for each run to avoid HTTP transport issues.
+        Uses the credential and client initialized in __aenter__.
         Includes retry logic for transient service errors.
         
         Args:
@@ -81,15 +81,13 @@ class CreatorAgent:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Create fresh credential and client for each agent run
-                async with (
-                    DefaultAzureCredential() as credential,
-                    ChatAgent(
-                        chat_client=AzureAIAgentClient(async_credential=credential),
-                        instructions=self.system_prompt,
-                        model=self.model
-                    ) as agent
-                ):
+                # Use the EXISTING credential and client from __aenter__
+                # Only create a new agent (which is lightweight)
+                async with ChatAgent(
+                    chat_client=self._client,
+                    instructions=self.system_prompt,
+                    model=self.model
+                ) as agent:
                     result = await agent.run(prompt)
                     result_text = result.text
                     
