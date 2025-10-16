@@ -56,6 +56,7 @@ class CreatorAgent:
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
         Helper method to create and run an agent with the system prompt.
+        Creates fresh credential and client for each run to avoid HTTP transport issues.
         
         Args:
             agent_name: Name for the agent instance
@@ -67,11 +68,18 @@ class CreatorAgent:
         Raises:
             ValueError: If agent returns empty response
         """
-        async with self._client.create_agent(
-            name=agent_name,
-            instructions=self.system_prompt,
-            model=self.model
-        ) as agent:
+        # Import ChatAgent here
+        from agent_framework import ChatAgent
+        
+        # Create fresh credential and client for each agent run
+        async with (
+            DefaultAzureCredential() as credential,
+            ChatAgent(
+                chat_client=AzureAIAgentClient(async_credential=credential),
+                instructions=self.system_prompt,
+                model=self.model
+            ) as agent
+        ):
             result = await agent.run(prompt)
             result_text = result.text
             
