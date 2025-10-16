@@ -84,6 +84,7 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         """
         Helper method to create and run an agent with the system prompt.
         Creates fresh credential and client for each run to avoid HTTP transport issues.
+        Includes retry logic for transient service errors.
         
         Args:
             agent_name: Name for the agent instance
@@ -98,39 +99,51 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         import asyncio
         import traceback
         from agent_framework import ChatAgent
+        from agent_framework.exceptions import ServiceResponseException
         
         # Add small delay to avoid rate limiting
         await asyncio.sleep(0.5)
         
-        try:
-            # Create fresh credential and client for each agent run
-            async with (
-                DefaultAzureCredential() as credential,
-                ChatAgent(
-                    chat_client=AzureAIAgentClient(async_credential=credential),
-                    instructions=self.system_prompt,
-                    model=self.model
-                ) as agent
-            ):
-                result = await agent.run(prompt)
-                result_text = result.text
+        # Retry logic for transient errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Create fresh credential and client for each agent run
+                async with (
+                    DefaultAzureCredential() as credential,
+                    ChatAgent(
+                        chat_client=AzureAIAgentClient(async_credential=credential),
+                        instructions=self.system_prompt,
+                        model=self.model
+                    ) as agent
+                ):
+                    result = await agent.run(prompt)
+                    result_text = result.text
+                    
+                    if not result_text:
+                        self.logger.error(f"Agent returned empty response. Full response: {result}")
+                        raise ValueError("Agent returned empty response")
+                    
+                    self.logger.debug(f"Agent raw response: {result_text}")
+                    return result_text
+            except ServiceResponseException as e:
+                # Log the service error
+                self.logger.warning(f"ServiceResponseException on attempt {attempt + 1}/{max_retries}: {e}")
                 
-                if not result_text:
-                    self.logger.error(f"Agent returned empty response. Full response: {result}")
-                    raise ValueError("Agent returned empty response")
-                
-                self.logger.debug(f"Agent raw response: {result_text}")
-                return result_text
-        except Exception as e:
-            # Log full exception details
-            self.logger.error(f"Exception in _run_agent: {type(e).__name__}: {e}")
-            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
-            # Check if there's more detail in the exception
-            if hasattr(e, '__dict__'):
-                self.logger.error(f"Exception attributes: {e.__dict__}")
-            if hasattr(e, 'args'):
-                self.logger.error(f"Exception args: {e.args}")
-            raise
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2, 4, 8 seconds
+                    wait_time = 2 ** (attempt + 1)
+                    self.logger.info(f"Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Last attempt failed, log and re-raise
+                    self.logger.error(f"All {max_retries} attempts failed for ServiceResponseException")
+                    raise
+            except Exception as e:
+                # Log full exception details for other errors (no retry)
+                self.logger.error(f"Non-retryable exception in _run_agent: {type(e).__name__}: {e}")
+                self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
+                raise
 
     async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub issue using the Agent Framework."""
@@ -240,6 +253,7 @@ class PRDeciderAgent:
         """
         Helper method to create and run an agent with the system prompt.
         Creates fresh credential and client for each run to avoid HTTP transport issues.
+        Includes retry logic for transient service errors.
         
         Args:
             agent_name: Name for the agent instance
@@ -254,39 +268,51 @@ class PRDeciderAgent:
         import asyncio
         import traceback
         from agent_framework import ChatAgent
+        from agent_framework.exceptions import ServiceResponseException
         
         # Add small delay to avoid rate limiting
         await asyncio.sleep(0.5)
         
-        try:
-            # Create fresh credential and client for each agent run
-            async with (
-                DefaultAzureCredential() as credential,
-                ChatAgent(
-                    chat_client=AzureAIAgentClient(async_credential=credential),
-                    instructions=self.system_prompt,
-                    model=self.model
-                ) as agent
-            ):
-                result = await agent.run(prompt)
-                result_text = result.text
+        # Retry logic for transient errors
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Create fresh credential and client for each agent run
+                async with (
+                    DefaultAzureCredential() as credential,
+                    ChatAgent(
+                        chat_client=AzureAIAgentClient(async_credential=credential),
+                        instructions=self.system_prompt,
+                        model=self.model
+                    ) as agent
+                ):
+                    result = await agent.run(prompt)
+                    result_text = result.text
+                    
+                    if not result_text:
+                        self.logger.error(f"Agent returned empty response. Full response: {result}")
+                        raise ValueError("Agent returned empty response")
+                    
+                    self.logger.debug(f"Agent raw response: {result_text}")
+                    return result_text
+            except ServiceResponseException as e:
+                # Log the service error
+                self.logger.warning(f"ServiceResponseException on attempt {attempt + 1}/{max_retries}: {e}")
                 
-                if not result_text:
-                    self.logger.error(f"Agent returned empty response. Full response: {result}")
-                    raise ValueError("Agent returned empty response")
-                
-                self.logger.debug(f"Agent raw response: {result_text}")
-                return result_text
-        except Exception as e:
-            # Log full exception details
-            self.logger.error(f"Exception in _run_agent: {type(e).__name__}: {e}")
-            self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
-            # Check if there's more detail in the exception
-            if hasattr(e, '__dict__'):
-                self.logger.error(f"Exception attributes: {e.__dict__}")
-            if hasattr(e, 'args'):
-                self.logger.error(f"Exception args: {e.args}")
-            raise
+                if attempt < max_retries - 1:
+                    # Exponential backoff: 2, 4, 8 seconds
+                    wait_time = 2 ** (attempt + 1)
+                    self.logger.info(f"Retrying in {wait_time} seconds...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Last attempt failed, log and re-raise
+                    self.logger.error(f"All {max_retries} attempts failed for ServiceResponseException")
+                    raise
+            except Exception as e:
+                # Log full exception details for other errors (no retry)
+                self.logger.error(f"Non-retryable exception in _run_agent: {type(e).__name__}: {e}")
+                self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
+                raise
 
     async def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""
