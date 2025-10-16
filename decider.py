@@ -77,9 +77,9 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        # Client cleanup is handled automatically
+        # Close credential properly
         if self._credential:
-            await self._credential.close()
+            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
@@ -211,9 +211,9 @@ class PRDeciderAgent:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        # Client cleanup is handled automatically
+        # Close credential properly
         if self._credential:
-            await self._credential.close()
+            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
