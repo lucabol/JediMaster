@@ -5,22 +5,22 @@ DeciderAgent - Uses LLM to evaluate GitHub issues for GitHub Copilot suitability
 import json
 import logging
 import os
-from typing import Dict, Any
-from azure_ai_foundry_utils import create_azure_ai_foundry_client, get_chat_client
+from typing import Dict, Any, Optional
+from agent_framework.azure import AzureAIAgentClient
+from azure.identity.aio import DefaultAzureCredential
 
 
 class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
-    # ...existing code...
 
     def __init__(self, azure_foundry_endpoint: str, model: str = None):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
-        # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
-        self.client = get_chat_client(self.project_client)
+        self.azure_foundry_endpoint = azure_foundry_endpoint
         self.logger = logging.getLogger('jedimaster.decider')
-        # ...existing code...
+        self._credential: Optional[DefaultAzureCredential] = None
+        self._client: Optional[AzureAIAgentClient] = None
+        
         self.system_prompt = """You are an expert AI assistant tasked with evaluating GitHub issues to determine if they are suitable for GitHub Copilot assistance. GitHub Copilot excels at:
 
 1. **Code Generation & Implementation**:
@@ -67,59 +67,78 @@ Analyze the provided GitHub issue and respond with a JSON object containing:
 - "reasoning": A clear explanation of why the issue is or isn't suitable for Copilot
 
 Be concise but thorough in your reasoning. Focus on whether the issue involves concrete coding tasks that Copilot can assist with."""
-    # ...existing code...
 
-    def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
-        # ...existing code...
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self._credential = DefaultAzureCredential()
+        self._client = AzureAIAgentClient(async_credential=self._credential)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self._client:
+            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        if self._credential:
+            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+
+    async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
+    async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
+        """Evaluate a GitHub issue using the Agent Framework."""
         try:
             issue_text = self._format_issue_for_llm(issue_data)
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"Please evaluate this GitHub issue:\n\n{issue_text}"}
-            ]
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,  # type: ignore
-                temperature=0.1,
-                max_tokens=2000,  # Increased for reasoning models that use tokens for "thinking"
-                response_format={"type": "json_object"}
-            )
-            result_text = response.choices[0].message.content
-            if result_text is None:
-                self.logger.error(f"LLM returned empty response. Full response: {response}")
-                raise ValueError("LLM returned empty response")
+            prompt = f"Please evaluate this GitHub issue:\n\n{issue_text}"
             
-            self.logger.debug(f"LLM raw response: {result_text}")
-            result = json.loads(result_text)
-            self.logger.debug(f"Parsed LLM response: {result}")
-            if 'decision' not in result or 'reasoning' not in result:
-                raise ValueError("LLM response missing required fields")
-            decision = result['decision'].lower().strip()
-            if decision not in ['yes', 'no']:
-                self.logger.warning(f"Unexpected decision value: {decision}, defaulting to 'no'")
-                decision = 'no'
-            validated_result = {
-                'decision': decision,
-                'reasoning': result['reasoning']
-            }
-            self.logger.debug(f"LLM decision: {decision}, reasoning: {result['reasoning'][:100]}...")
-            return validated_result
+            # Create agent with context manager for automatic cleanup
+            async with self._client.create_agent(
+                name="IssueDeciderAgent",
+                instructions=self.system_prompt,
+                model=self.model
+            ) as agent:
+                result = await agent.run(prompt)
+                result_text = result.text
+                
+                if not result_text:
+                    self.logger.error(f"Agent returned empty response. Full response: {result}")
+                    raise ValueError("Agent returned empty response")
+                
+                self.logger.debug(f"Agent raw response: {result_text}")
+                
+                # Parse JSON response
+                parsed_result = json.loads(result_text)
+                self.logger.debug(f"Parsed agent response: {parsed_result}")
+                
+                if 'decision' not in parsed_result or 'reasoning' not in parsed_result:
+                    raise ValueError("Agent response missing required fields")
+                
+                decision = parsed_result['decision'].lower().strip()
+                if decision not in ['yes', 'no']:
+                    self.logger.warning(f"Unexpected decision value: {decision}, defaulting to 'no'")
+                    decision = 'no'
+                
+                validated_result = {
+                    'decision': decision,
+                    'reasoning': parsed_result['reasoning']
+                }
+                
+                self.logger.debug(f"Agent decision: {decision}, reasoning: {parsed_result['reasoning'][:100]}...")
+                return validated_result
+                
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            self.logger.error(f"Failed to parse agent response as JSON: {e}")
             self.logger.error(f"Raw response that failed to parse: {result_text}")
             return {
                 'decision': 'no',
-                'reasoning': 'Error: Could not parse LLM response'
+                'reasoning': 'Error: Could not parse agent response'
             }
         except Exception as e:
-            self.logger.error(f"Error calling LLM for issue evaluation: {e}")
+            self.logger.error(f"Error calling agent for issue evaluation: {e}")
             return {
                 'decision': 'no',
                 'reasoning': f'Error: {str(e)}'
             }
 
     def _format_issue_for_llm(self, issue_data: Dict[str, Any]) -> str:
-        # ...existing code...
+        """Format issue data for LLM prompt."""
         formatted = f"**Title:** {issue_data['title']}\n\n"
         if issue_data.get('body'):
             formatted += f"**Description:**\n{issue_data['body']}\n\n"
@@ -132,25 +151,26 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
                 formatted += f"{i}. {comment_text}\n"
         return formatted
 
-    def batch_evaluate_issues(self, issues_data: list) -> list:
-        # ...existing code...
+    async def batch_evaluate_issues(self, issues_data: list) -> list:
+        """Evaluate multiple issues (sequentially for now, could be parallelized)."""
         results = []
         for issue_data in issues_data:
-            result = self.evaluate_issue(issue_data)
+            result = await self.evaluate_issue(issue_data)
             results.append(result)
         return results
 
-# --- New class for PR Decider Agent ---
+
 class PRDeciderAgent:
     """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
 
     def __init__(self, azure_foundry_endpoint: str, model: str = None):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
-        # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
-        self.client = get_chat_client(self.project_client)
+        self.azure_foundry_endpoint = azure_foundry_endpoint
         self.logger = logging.getLogger('jedimaster.prdecider')
+        self._credential: Optional[DefaultAzureCredential] = None
+        self._client: Optional[AzureAIAgentClient] = None
+        
         self.system_prompt = (
             "You are an expert AI assistant tasked with reviewing GitHub pull requests. "
             "You must make a binary decision for each PR:\n\n"
@@ -166,41 +186,55 @@ class PRDeciderAgent:
             "- Consider code quality, completeness, and adherence to best practices"
         )
 
-    def evaluate_pr(self, pr_text: str) -> dict:
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self._credential = DefaultAzureCredential()
+        self._client = AzureAIAgentClient(async_credential=self._credential)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self._client:
+            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        if self._credential:
+            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+
+    async def evaluate_pr(self, pr_text: str) -> dict:
         """Evaluate a PR and return either a decision or a comment."""
         try:
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": f"Please review this pull request:\n\n{pr_text}"}
-            ]
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,  # type: ignore
-                temperature=0.5,
-                max_tokens=2000,  # Increased for reasoning models that use tokens for "thinking"
-                response_format={"type": "json_object"}
-            )
-            result_text = response.choices[0].message.content
+            prompt = f"Please review this pull request:\n\n{pr_text}"
             
-            if result_text is None:
-                self.logger.error(f"LLM returned empty response. Full response: {response}")
-                raise ValueError("LLM returned empty response")
-            
-            self.logger.debug(f"LLM raw response: {result_text}")
-            result = json.loads(result_text)
-            self.logger.debug(f"Parsed LLM response: {result}")
-            if not (("decision" in result and result["decision"] == "accept") or "comment" in result):
-                raise ValueError("LLM response missing required fields: must have 'decision' or 'comment'")
-            self.logger.debug(f"LLM PR review result: {result}")
-            return result
+            # Create agent with context manager for automatic cleanup
+            async with self._client.create_agent(
+                name="PRDeciderAgent",
+                instructions=self.system_prompt,
+                model=self.model
+            ) as agent:
+                result = await agent.run(prompt)
+                result_text = result.text
+                
+                if not result_text:
+                    self.logger.error(f"Agent returned empty response. Full response: {result}")
+                    raise ValueError("Agent returned empty response")
+                
+                self.logger.debug(f"Agent raw response: {result_text}")
+                parsed_result = json.loads(result_text)
+                self.logger.debug(f"Parsed agent response: {parsed_result}")
+                
+                if not (("decision" in parsed_result and parsed_result["decision"] == "accept") or "comment" in parsed_result):
+                    raise ValueError("Agent response missing required fields: must have 'decision' or 'comment'")
+                
+                self.logger.debug(f"Agent PR review result: {parsed_result}")
+                return parsed_result
+                
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
+            self.logger.error(f"Failed to parse agent response as JSON: {e}")
             self.logger.error(f"Raw response that failed to parse: {result_text}")
             return {
-                'comment': 'Error: Could not parse LLM response'
+                'comment': 'Error: Could not parse agent response'
             }
         except Exception as e:
-            self.logger.error(f"Error calling LLM for PR evaluation: {e}")
+            self.logger.error(f"Error calling agent for PR evaluation: {e}")
             return {
                 'comment': f'Error: {str(e)}'
             }

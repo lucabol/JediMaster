@@ -9,12 +9,14 @@ import numpy as np
 import re
 from typing import List, Dict, Any, Optional, Set
 from github import Github
-from azure_ai_foundry_utils import create_azure_ai_foundry_client, get_chat_client, get_embeddings_client
+from agent_framework.azure import AzureAIAgentClient
+from azure.identity.aio import DefaultAzureCredential
 from reporting import format_table
 
 
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
+    
     def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
@@ -24,12 +26,11 @@ class CreatorAgent:
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
         
-        # Create Azure AI Foundry client
-        self.project_client = create_azure_ai_foundry_client(azure_foundry_endpoint)
-        self.client = get_chat_client(self.project_client)
-        self.embeddings_client = get_embeddings_client(self.project_client)
+        self._credential: Optional[DefaultAzureCredential] = None
+        self._client: Optional[AzureAIAgentClient] = None
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
+        
         self.system_prompt = (
             "You are an expert AI assistant tasked with analyzing a GitHub repository and suggesting actionable, concrete issues that could be opened to improve the project. "
             "You MUST return exactly the requested number of issues as a JSON object with an 'issues' key containing an array of issue objects. "
@@ -39,6 +40,19 @@ class CreatorAgent:
             "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
             "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]}"
         )
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        self._credential = DefaultAzureCredential()
+        self._client = AzureAIAgentClient(async_credential=self._credential)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        if self._client:
+            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        if self._credential:
+            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     def _shorten(self, text: Optional[str], limit: int = 80) -> str:
         if not text:
@@ -164,14 +178,38 @@ class CreatorAgent:
         
         return intersection / union if union > 0 else 0.0
 
-    def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for a list of texts using text-embedding-ada-002 model."""
+
+    async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Get embeddings for a list of texts using Azure OpenAI (not through Agent Framework)."""
         try:
-            response = self.embeddings_client.embeddings.create(
-                model="text-embedding-ada-002",
-                input=texts
+            # Import Azure OpenAI client for embeddings only
+            from openai import AsyncAzureOpenAI
+            from azure.identity import get_bearer_token_provider
+            
+            # Parse endpoint to get base URL
+            import urllib.parse
+            parsed = urllib.parse.urlparse(self.azure_foundry_endpoint)
+            base_endpoint = f"{parsed.scheme}://{parsed.netloc}"
+            query_params = urllib.parse.parse_qs(parsed.query)
+            api_version = query_params.get('api-version', ['2024-12-01-preview'])[0]
+            
+            # Create token provider
+            token_provider = get_bearer_token_provider(
+                self._credential, 
+                "https://cognitiveservices.azure.com/.default"
             )
-            return [data.embedding for data in response.data]
+            
+            # Create async client for embeddings
+            async with AsyncAzureOpenAI(
+                azure_endpoint=base_endpoint,
+                azure_ad_token_provider=token_provider,
+                api_version=api_version
+            ) as embeddings_client:
+                response = await embeddings_client.embeddings.create(
+                    model="text-embedding-ada-002",
+                    input=texts
+                )
+                return [data.embedding for data in response.data]
         except Exception as e:
             self.logger.error(f"Failed to get embeddings: {e}")
             return []
@@ -197,7 +235,7 @@ class CreatorAgent:
             self.logger.error(f"Failed to calculate similarity: {e}")
             return 0.0
 
-    def _check_for_similar_issues(self, suggested_issues: List[Dict[str, str]], existing_issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    async def _check_for_similar_issues(self, suggested_issues: List[Dict[str, str]], existing_issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
         """
         Check suggested issues against existing issues for similarity.
         Returns (unique_issues, similar_issues_info)
@@ -216,11 +254,11 @@ class CreatorAgent:
             
             # Get embeddings for all titles
             all_titles = suggested_titles + existing_titles
-            embeddings = self._get_embeddings(all_titles)
+            embeddings = await self._get_embeddings(all_titles)
             
             if not embeddings or len(embeddings) != len(all_titles):
                 self.logger.warning("Failed to get embeddings, falling back to local similarity")
-                return self._check_for_similar_issues_local(suggested_issues, existing_issues)
+                return await self._check_for_similar_issues_local(suggested_issues, existing_issues)
             
             # Split embeddings back
             suggested_embeddings = embeddings[:len(suggested_titles)]
@@ -260,11 +298,11 @@ class CreatorAgent:
         else:
             # Use local similarity (faster)
             self.logger.info(f"Using local word-based similarity detection against {len(existing_issues)} open issues")
-            unique_issues, similar_issues_info = self._check_for_similar_issues_local(suggested_issues, existing_issues)
+            unique_issues, similar_issues_info = await self._check_for_similar_issues_local(suggested_issues, existing_issues)
         
         return unique_issues, similar_issues_info
 
-    def _check_for_similar_issues_local(self, suggested_issues: List[Dict[str, str]], existing_issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
+    async def _check_for_similar_issues_local(self, suggested_issues: List[Dict[str, str]], existing_issues: List[Dict[str, Any]]) -> tuple[List[Dict[str, str]], List[Dict[str, Any]]]:
         """Local similarity check using word overlap."""
         unique_issues = []
         similar_issues_info = []
@@ -305,8 +343,8 @@ class CreatorAgent:
         
         return unique_issues, similar_issues_info
 
-    def suggest_issues(self, max_issues: int = 5) -> List[Dict[str, str]]:
-        """Call LLM to suggest issues based on repo context. Stores the conversation for inspection."""
+    async def suggest_issues(self, max_issues: int = 5) -> List[Dict[str, str]]:
+        """Call agent to suggest issues based on repo context. Stores the conversation for inspection."""
         context = self._gather_repo_context()
         user_prompt = (
             f"Given the following repository context, suggest exactly {max_issues} new GitHub issues. "
@@ -316,84 +354,88 @@ class CreatorAgent:
             f"Return ONLY the JSON object with an 'issues' key containing {max_issues} issues, no other text.\n\n"
             f"Repository context:\n{context}"
         )
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,  # type: ignore
-            temperature=0.3,
-            max_tokens=4000,  # Increased to account for reasoning tokens
-            response_format={"type": "json_object"}
-        )
-        result_text = response.choices[0].message.content
-        self.last_conversation = {
-            "system": self.system_prompt,
-            "user": user_prompt,
-            "llm_response": result_text
-        }
-        if not result_text:
-            self.logger.error(f"LLM returned empty response. Full response: {response}")
-            raise ValueError("LLM returned empty response")
+        
         try:
-            # Clean up the response text (remove any markdown code blocks)
-            cleaned_response = result_text.strip()
-            if cleaned_response.startswith('```json'):
-                cleaned_response = cleaned_response[7:]
-            if cleaned_response.endswith('```'):
-                cleaned_response = cleaned_response[:-3]
-            cleaned_response = cleaned_response.strip()
-            
-            issues = json.loads(cleaned_response)
-            
-            self.logger.info(f"LLM response type: {type(issues)}")
-            self.logger.info(f"LLM response content: {issues}")
-            
-            # First check if it's a dict with an 'issues' key (our expected format)
-            if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
-                self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
-                return issues['issues'][:max_issues]
-            
-            # Fallback: Expect a JSON array of issues (legacy format)
-            elif isinstance(issues, list):
-                return issues[:max_issues]
-            elif isinstance(issues, dict):
-                # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
-                for key in ['suggestions', 'items']:
-                    if key in issues and isinstance(issues[key], list):
-                        self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
-                        return issues[key][:max_issues]
+            # Create agent for issue suggestion
+            async with self._client.create_agent(
+                name="IssueCreatorAgent",
+                instructions=self.system_prompt,
+                model=self.model
+            ) as agent:
+                result = await agent.run(user_prompt)
+                result_text = result.text
                 
-                # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})
-                numeric_keys = [k for k in issues.keys() if k.isdigit()]
-                if numeric_keys:
-                    self.logger.info(f"Found numeric keys: {numeric_keys}")
-                    # Convert to list by sorting the numeric keys
-                    sorted_keys = sorted(numeric_keys, key=int)
-                    numeric_issues = [issues[k] for k in sorted_keys]
-                    return numeric_issues[:max_issues]
+                self.last_conversation = {
+                    "system": self.system_prompt,
+                    "user": user_prompt,
+                    "llm_response": result_text
+                }
                 
-                # Handle single issue dict with 'title' and 'body'
-                if 'title' in issues and 'body' in issues:
-                    return [issues]
+                if not result_text:
+                    self.logger.error(f"Agent returned empty response. Full response: {result}")
+                    raise ValueError("Agent returned empty response")
                 
-                # Check if it's an error response
-                if 'error' in issues:
-                    self.logger.error(f"LLM returned error: {issues['error']}")
+                try:
+                    # Clean up the response text (remove any markdown code blocks)
+                    cleaned_response = result_text.strip()
+                    if cleaned_response.startswith('```json'):
+                        cleaned_response = cleaned_response[7:]
+                    if cleaned_response.endswith('```'):
+                        cleaned_response = cleaned_response[:-3]
+                    cleaned_response = cleaned_response.strip()
+                    
+                    issues = json.loads(cleaned_response)
+                    
+                    self.logger.info(f"Agent response type: {type(issues)}")
+                    self.logger.info(f"Agent response content: {issues}")
+                    
+                    # First check if it's a dict with an 'issues' key (our expected format)
+                    if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
+                        self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
+                        return issues['issues'][:max_issues]
+                    
+                    # Fallback: Expect a JSON array of issues (legacy format)
+                    elif isinstance(issues, list):
+                        return issues[:max_issues]
+                    elif isinstance(issues, dict):
+                        # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
+                        for key in ['suggestions', 'items']:
+                            if key in issues and isinstance(issues[key], list):
+                                self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
+                                return issues[key][:max_issues]
+                        
+                        # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})
+                        numeric_keys = [k for k in issues.keys() if k.isdigit()]
+                        if numeric_keys:
+                            self.logger.info(f"Found numeric keys: {numeric_keys}")
+                            # Convert to list by sorting the numeric keys
+                            sorted_keys = sorted(numeric_keys, key=int)
+                            numeric_issues = [issues[k] for k in sorted_keys]
+                            return numeric_issues[:max_issues]
+                        
+                        # Handle single issue dict with 'title' and 'body'
+                        if 'title' in issues and 'body' in issues:
+                            return [issues]
+                        
+                        # Check if it's an error response
+                        if 'error' in issues:
+                            self.logger.error(f"Agent returned error: {issues['error']}")
+                            return []
+                    
+                    # If we get here, the format is unexpected
+                    self.logger.error(f"Unexpected agent response format: {type(issues)}")
+                    self.logger.error(f"Response keys: {list(issues.keys()) if isinstance(issues, dict) else 'Not a dict'}")
+                    if isinstance(issues, dict) and len(issues) < 10:  # Only log if not too verbose
+                        self.logger.error(f"Full response content: {issues}")
                     return []
-            
-            # If we get here, the format is unexpected
-            self.logger.error(f"Unexpected LLM response format: {type(issues)}")
-            self.logger.error(f"Response keys: {list(issues.keys()) if isinstance(issues, dict) else 'Not a dict'}")
-            if isinstance(issues, dict) and len(issues) < 10:  # Only log if not too verbose
-                self.logger.error(f"Full response content: {issues}")
-            return []
-        except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to parse LLM response as JSON: {e}")
-            return []
+                except json.JSONDecodeError as e:
+                    self.logger.error(f"Failed to parse agent response as JSON: {e}")
+                    return []
+                except Exception as e:
+                    self.logger.error(f"Failed to parse agent response: {e}")
+                    return []
         except Exception as e:
-            self.logger.error(f"Failed to parse LLM response: {e}")
+            self.logger.error(f"Error in suggest_issues: {e}")
             return []
 
     def open_issues(self, issues: List[Dict[str, str]]) -> List[Dict[str, Any]]:
@@ -418,15 +460,15 @@ class CreatorAgent:
                 })
         return results
 
-    def create_issues(self, max_issues: int = 5) -> List[Dict[str, Any]]:
+    async def create_issues(self, max_issues: int = 5) -> List[Dict[str, Any]]:
         """Suggest and open new issues in the repo, checking for duplicates."""
         # Get existing issues first
         existing_issues = self._get_existing_issues()
         
         # Suggest new issues
-        suggested_issues = self.suggest_issues(max_issues=max_issues)
+        suggested_issues = await self.suggest_issues(max_issues=max_issues)
         if not suggested_issues:
-            self.logger.warning("No issues suggested by LLM.")
+            self.logger.warning("No issues suggested by agent.")
             print("\nISSUE CREATION SUMMARY")
             summary_rows = [
                 ("Suggested", 0),
@@ -446,7 +488,7 @@ class CreatorAgent:
             return []
         
         # Check for similar issues
-        unique_issues, similar_issues_info = self._check_for_similar_issues(suggested_issues, existing_issues)
+        unique_issues, similar_issues_info = await self._check_for_similar_issues(suggested_issues, existing_issues)
         
         summary_rows = [
             ("Suggested", len(suggested_issues)),

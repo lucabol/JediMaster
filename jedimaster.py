@@ -130,7 +130,7 @@ class JediMaster:
         except Exception as exc:
             self.logger.error(f"Failed to mark PR #{getattr(pr, 'number', '?')} as ready for review: {exc}")
 
-    def _handle_pending_review_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+    async def _handle_pending_review_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
 
@@ -156,7 +156,7 @@ class JediMaster:
                 )
             )
             fresh_metadata = self._collect_pr_metadata(pr)
-            results.extend(self._handle_ready_to_merge_state(pr, fresh_metadata))
+            results.extend(await self._handle_ready_to_merge_state(pr, fresh_metadata))
             return results
 
         pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
@@ -168,7 +168,7 @@ class JediMaster:
         pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
 
         try:
-            agent_result = self.pr_decider.evaluate_pr(pr_text)
+            agent_result = await self.pr_decider.evaluate_pr(pr_text)
         except Exception as exc:
             self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
             results.append(
@@ -256,7 +256,7 @@ class JediMaster:
                 )
             )
             fresh_metadata = self._collect_pr_metadata(pr)
-            results.extend(self._handle_ready_to_merge_state(pr, fresh_metadata))
+            results.extend(await self._handle_ready_to_merge_state(pr, fresh_metadata))
             return results
 
         results.append(
@@ -273,7 +273,7 @@ class JediMaster:
         )
         return results
 
-    def _handle_changes_requested_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+    async def _handle_changes_requested_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
         latest_review = metadata.get('latest_copilot_review') or {}
@@ -316,7 +316,7 @@ class JediMaster:
         )
         return results
 
-    def _handle_ready_to_merge_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+    async def _handle_ready_to_merge_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
 
@@ -471,7 +471,7 @@ class JediMaster:
         )
         return results
 
-    def _handle_blocked_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+    async def _handle_blocked_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         reason = (classification or {}).get('reason', 'waiting_signal')
 
@@ -497,7 +497,7 @@ class JediMaster:
             )
         ]
 
-    def _handle_done_state(self, pr, metadata: Dict[str, Any]) -> List[PRRunResult]:
+    async def _handle_done_state(self, pr, metadata: Dict[str, Any]) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
         self._remove_merge_attempt_labels(pr)
         return [
@@ -513,7 +513,7 @@ class JediMaster:
             )
         ]
 
-    def _process_pr_state_machine(self, pr) -> List[PRRunResult]:
+    async def _process_pr_state_machine(self, pr) -> List[PRRunResult]:
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
 
@@ -606,7 +606,7 @@ class JediMaster:
                 # Debug logging to help identify the metadata scoping issue
                 self.logger.debug(f"About to call handler for PR #{pr.number} state {current_state}")
                 self.logger.debug(f"Metadata keys: {list(metadata.keys()) if isinstance(metadata, dict) else 'NOT_DICT'}")
-                handler_results = handler(pr, metadata, classification)
+                handler_results = await handler(pr, metadata, classification)
                 results.extend(handler_results)
             except Exception as exc:
                 import traceback
@@ -626,7 +626,7 @@ class JediMaster:
                 )
         return results
 
-    def manage_pull_requests(self, repo_name: str, batch_size: int = 15) -> List[PRRunResult]:
+    async def manage_pull_requests(self, repo_name: str, batch_size: int = 15) -> List[PRRunResult]:
         results: List[PRRunResult] = []
         try:
             repo = self.github.get_repo(repo_name)
@@ -635,7 +635,7 @@ class JediMaster:
                 pulls = pulls[:batch_size]
             self.logger.info(f"[StateMachine] Managing {len(pulls)} open PRs in {repo_name}")
             for pr in pulls:
-                pr_results = self._process_pr_state_machine(pr)
+                pr_results = await self._process_pr_state_machine(pr)
                 results.extend(pr_results)
         except Exception as exc:
             self.logger.error(f"Failed to manage PRs in {repo_name}: {exc}")
@@ -1466,7 +1466,7 @@ class JediMaster:
         self.logger.info(f"Found {len(unprocessed_issues)} unprocessed issues (batch size: {batch_size})")
         return unprocessed_issues
 
-    def process_issue(self, issue, repo_name: str) -> IssueResult:
+    async def process_issue(self, issue, repo_name: str) -> IssueResult:
         """Process a single issue and return an IssueResult."""
         try:
             # Skip if already assigned to Copilot
@@ -1480,7 +1480,7 @@ class JediMaster:
                     reasoning="Already assigned to Copilot."
                 )
             # Evaluate with DeciderAgent
-            result = self.decider.evaluate_issue({'title': issue.title, 'body': issue.body or ''})
+            result = await self.decider.evaluate_issue({'title': issue.title, 'body': issue.body or ''})
             if result.get('decision', '').lower() == 'yes':
                 if not self.just_label:
                     try:
@@ -1598,14 +1598,44 @@ class JediMaster:
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.github = Github(github_token)
-        self.decider = DeciderAgent(azure_foundry_endpoint)
-        self.pr_decider = PRDeciderAgent(azure_foundry_endpoint)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
         self.manage_prs = manage_prs
         self.logger = self._setup_logger()
         # Get merge retry limit from environment
         self.merge_max_retries = self._get_merge_max_retries()
+        # Agents will be initialized in async context managers
+        self._decider = None
+        self._pr_decider = None
+
+    async def __aenter__(self):
+        """Async context manager entry - initialize agents."""
+        self._decider = DeciderAgent(self.azure_foundry_endpoint)
+        self._pr_decider = PRDeciderAgent(self.azure_foundry_endpoint)
+        await self._decider.__aenter__()
+        await self._pr_decider.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - cleanup agents."""
+        if self._pr_decider:
+            await self._pr_decider.__aexit__(exc_type, exc_val, exc_tb)
+        if self._decider:
+            await self._decider.__aexit__(exc_type, exc_val, exc_tb)
+
+    @property
+    def decider(self):
+        """Access decider agent."""
+        if self._decider is None:
+            raise RuntimeError("JediMaster must be used as async context manager")
+        return self._decider
+
+    @property
+    def pr_decider(self):
+        """Access PR decider agent."""
+        if self._pr_decider is None:
+            raise RuntimeError("JediMaster must be used as async context manager")
+        return self._pr_decider
 
     def _get_merge_max_retries(self) -> int:
         """Get the maximum number of merge retry attempts from environment variable."""
@@ -1674,19 +1704,19 @@ class JediMaster:
             self.logger.error(f"Error incrementing merge attempt count for PR #{pr.number}: {e}")
             return 1  # Default to 1 if we can't track properly
 
-    def merge_reviewed_pull_requests(self, repo_name: str, batch_size: int = 10):
+    async def merge_reviewed_pull_requests(self, repo_name: str, batch_size: int = 10):
         """Legacy wrapper maintained for compatibility; delegates to manage_pull_requests."""
         self.logger.info(
             "merge_reviewed_pull_requests is deprecated – calling manage_pull_requests instead."
         )
-        return self.manage_pull_requests(repo_name, batch_size=batch_size)
+        return await self.manage_pull_requests(repo_name, batch_size=batch_size)
 
-    def process_pull_requests(self, repo_name: str, batch_size: int = 15):
+    async def process_pull_requests(self, repo_name: str, batch_size: int = 15):
         """Legacy wrapper maintained for compatibility; delegates to manage_pull_requests."""
         self.logger.info(
             "process_pull_requests is deprecated – calling manage_pull_requests instead."
         )
-        return self.manage_pull_requests(repo_name, batch_size=batch_size)
+        return await self.manage_pull_requests(repo_name, batch_size=batch_size)
 
     def _setup_logger(self) -> logging.Logger:
         logger = logging.getLogger('jedimaster')
@@ -1775,7 +1805,7 @@ class JediMaster:
             ) from json_err
 
 
-    def process_user(self, username: str) -> ProcessingReport:
+    async def process_user(self, username: str) -> ProcessingReport:
         filter_method = "topic 'managed-by-coding-agent'" if self.use_topic_filter else ".coding_agent file"
         self.logger.info(f"Processing user: {username} (filtering by {filter_method})")
         try:
@@ -1797,7 +1827,7 @@ class JediMaster:
                 return ProcessingReport()
             filter_desc = "topic 'managed-by-coding-agent'" if self.use_topic_filter else ".coding_agent file"
             self.logger.info(f"Found {len(filtered_repos)} repositories with {filter_desc}")
-            return self.process_repositories(filtered_repos)
+            return await self.process_repositories(filtered_repos)
         except GithubException as e:
             error_msg = f"Error accessing user {username}: {e}"
             self.logger.error(error_msg)
@@ -1827,21 +1857,21 @@ class JediMaster:
                 )]
             )
 
-    def process_repositories(self, repo_names: List[str]) -> ProcessingReport:
+    async def process_repositories(self, repo_names: List[str]) -> ProcessingReport:
         all_results = []
         pr_results = []
         for repo_name in repo_names:
             self.logger.info(f"Processing repository: {repo_name}")
             try:
                 if self.manage_prs:
-                    pr_results.extend(self.manage_pull_requests(repo_name))
+                    pr_results.extend(await self.manage_pull_requests(repo_name))
                 else:
                     # Only process issues if not doing PR processing
                     issues = self.fetch_issues(repo_name)
                     for issue in issues:
                         if issue.pull_request:
                             continue
-                        result = self.process_issue(issue, repo_name)
+                        result = await self.process_issue(issue, repo_name)
                         all_results.append(result)
             except Exception as e:
                 self.logger.error(f"Failed to process repository {repo_name}: {e}")
@@ -2011,8 +2041,7 @@ class JediMaster:
         )
 
 
-
-def main():
+async def main():
     """Main entry point for the JediMaster script."""
     parser = argparse.ArgumentParser(description='JediMaster - Label or assign GitHub issues to Copilot and optionally process PRs')
 
@@ -2103,57 +2132,57 @@ def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
-                creator.create_issues()
+                async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                    await creator.create_issues()
             return 0
 
-        jedimaster = JediMaster(
+        async with JediMaster(
             github_token,
             azure_foundry_endpoint,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
             manage_prs=args.manage_prs
-        )
+        ) as jedimaster:
 
-        # Process based on input type
-        if args.user:
-            print(f"Processing user: {args.user}")
-            report = jedimaster.process_user(args.user)
-            repo_names = [r.repo for r in report.results] if report.results else []
-        else:
-            print(f"Processing {len(args.repositories)} repositories...")
-            report = jedimaster.process_repositories(args.repositories)
-            repo_names = args.repositories
+            # Process based on input type
+            if args.user:
+                print(f"Processing user: {args.user}")
+                report = await jedimaster.process_user(args.user)
+                repo_names = [r.repo for r in report.results] if report.results else []
+            else:
+                print(f"Processing {len(args.repositories)} repositories...")
+                report = await jedimaster.process_repositories(args.repositories)
+                repo_names = args.repositories
 
-        # Process repositories
-        if args.manage_prs:
-            print("Processing pull requests through state machine...")
-        else:
-            print("Processing issues for assignment...")
-        
-        # All repository and issue processing is handled in process_repositories now
-        # based on the manage_prs flag
+            # Process repositories
+            if args.manage_prs:
+                print("Processing pull requests through state machine...")
+            else:
+                print("Processing issues for assignment...")
+            
+            # All repository and issue processing is handled in process_repositories now
+            # based on the manage_prs flag
 
-        # Save and display results
-        if args.save_report:
-            filename = jedimaster.save_report(report, args.output)
-            print(f"\nDetailed report saved to: {filename}")
-        else:
-            print("\nReport not saved (use --save-report to save to file)")
-        summary_context = "issues"
-        summary_pr_results: Optional[List[PRRunResult]] = None
-        # Display results based on mode
-        if args.manage_prs:
-            jedimaster.print_pr_results("PULL REQUEST MANAGEMENT RESULTS", report.pr_results if hasattr(report, 'pr_results') else [])
-        else:
-            jedimaster.print_summary(report, context="issues")
-        return 0
+            # Save and display results
+            if args.save_report:
+                filename = jedimaster.save_report(report, args.output)
+                print(f"\nDetailed report saved to: {filename}")
+            else:
+                print("\nReport not saved (use --save-report to save to file)")
+            summary_context = "issues"
+            summary_pr_results: Optional[List[PRRunResult]] = None
+            # Display results based on mode
+            if args.manage_prs:
+                jedimaster.print_pr_results("PULL REQUEST MANAGEMENT RESULTS", report.pr_results if hasattr(report, 'pr_results') else [])
+            else:
+                jedimaster.print_summary(report, context="issues")
+            return 0
 
     except Exception as e:
         print(f"Fatal error: {e}")
         return 1
 
-def process_issues_api(input_data: dict) -> dict:
+async def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
@@ -2163,17 +2192,19 @@ def process_issues_api(input_data: dict) -> dict:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, azure_foundry_endpoint, just_label=just_label)
+    
     repo_names = input_data.get('repo_names')
     if not repo_names or not isinstance(repo_names, list):
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
+    
     try:
-        report = jm.process_repositories(repo_names)
-        return asdict(report)
+        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+            report = await jm.process_repositories(repo_names)
+            return asdict(report)
     except Exception as e:
         return {"error": str(e)}
 
-def process_user_api(input_data: dict) -> dict:
+async def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
@@ -2183,12 +2214,17 @@ def process_user_api(input_data: dict) -> dict:
         just_label = _get_issue_action_from_env()
     except Exception as e:
         return {"error": str(e)}
-    jm = JediMaster(github_token, azure_foundry_endpoint, just_label=just_label)
+    
     username = input_data.get('username')
     if not username:
         return {"error": "Missing username in input"}
+    
     try:
-        report = jm.process_user(username)
+        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+            report = await jm.process_user(username)
+            return asdict(report)
+    except Exception as e:
+        return {"error": str(e)}
         return asdict(report)
     except Exception as e:
         return {"error": str(e)}
@@ -2211,4 +2247,5 @@ def _get_issue_action_from_env() -> bool:
         raise ValueError(f"Invalid ISSUE_ACTION: {action}. Must be 'assign' or 'label'.")
 
 if __name__ == '__main__':
-    exit(main())
+    import asyncio
+    exit(asyncio.run(main()))

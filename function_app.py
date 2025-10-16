@@ -116,56 +116,23 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         'rate_limit_info': {}
     }
 
-    # Instantiate core orchestrator for issue processing (always with manage_prs=False)
-    jedi = JediMaster(
-        github_token,
-        azure_foundry_endpoint,
-        just_label=just_label_flag,
-        use_topic_filter=not use_file_filter,
-        manage_prs=False  # Issue processing should always be separate from PR processing
-    )
 
-    # Check initial rate limit status
-    logging.info("[AutomateRepos] Checking initial GitHub API rate limit status...")
-    try:
-        is_rate_limited, rate_status = jedi._check_rate_limit_status()
-        summary['rate_limit_info']['initial'] = rate_status
-        logging.info(f"[AutomateRepos] Initial rate limit status: {rate_status}")
-        
-        if is_rate_limited:
-            logging.warning("[AutomateRepos] Starting with limited GitHub API quota - reducing batch size")
-            batch_size = min(batch_size, 3)
-    except Exception as e:
-        logging.error(f"[AutomateRepos] Failed to check initial rate limit: {e}")
-        summary['rate_limit_info']['initial'] = f"Check failed: {str(e)}"
-
+    # We'll initialize JediMaster within context managers per usage
+    # Note: Rate limit checking will be done per-operation now
+    
     for repo_full in repo_names:
         logging.info(f"[AutomateRepos] Processing repository {repo_full}")
         repo_block = {'repo': repo_full}
-        
-        # Check rate limit before processing each repo
-        logging.info(f"[AutomateRepos] Checking rate limit before processing {repo_full}...")
-        try:
-            is_rate_limited, rate_status = jedi._check_rate_limit_status()
-            logging.info(f"[AutomateRepos] Rate limit before {repo_full}: {rate_status}")
-            
-            if is_rate_limited:
-                logging.warning(f"[AutomateRepos] Rate limit reached, skipping remaining repositories")
-                summary['errors'].append({'repo': repo_full, 'stage': 'rate_limit', 'error': 'GitHub API rate limit reached'})
-                break
-        except Exception as e:
-            logging.error(f"[AutomateRepos] Failed to check rate limit for {repo_full}: {e}")
-            # Continue processing despite rate limit check failure
         
         try:
             # 1. Optional issue creation
             if create_issues_flag:
                 try:
-                    creator = CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity)
-                    created = creator.create_issues(max_issues=create_count or 3)
-                    repo_block['created_issues'] = created
-                    summary['issue_creation'].append({'repo': repo_full, 'created': created})
-                    logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full}")
+                    async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                        created = await creator.create_issues(max_issues=create_count or 3)
+                        repo_block['created_issues'] = created
+                        summary['issue_creation'].append({'repo': repo_full, 'created': created})
+                        logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full}")
                     
                     # Rate limit delay after issue creation
                     if rate_limit_delay > 0:
@@ -173,19 +140,27 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 except Exception as e:
                     logging.error(f"[AutomateRepos] Issue creation failed for {repo_full}: {e}")
                     summary['errors'].append({'repo': repo_full, 'stage': 'create_issues', 'error': str(e)})
+            
             # 2. Issue labeling / assigning (non-PR run)
             try:
-                report = jedi.process_repositories([repo_full])
-                repo_block['issue_report'] = {
-                    'total': report.total_issues,
-                    'assigned': report.assigned,
-                    'labeled': report.labeled,
-                    'not_assigned': report.not_assigned,
-                    'already_assigned': report.already_assigned,
-                    'errors': report.errors
-                }
-                summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
-                logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
+                async with JediMaster(
+                    github_token,
+                    azure_foundry_endpoint,
+                    just_label=just_label_flag,
+                    use_topic_filter=not use_file_filter,
+                    manage_prs=False
+                ) as jedi:
+                    report = await jedi.process_repositories([repo_full])
+                    repo_block['issue_report'] = {
+                        'total': report.total_issues,
+                        'assigned': report.assigned,
+                        'labeled': report.labeled,
+                        'not_assigned': report.not_assigned,
+                        'already_assigned': report.already_assigned,
+                        'errors': report.errors
+                    }
+                    summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
+                    logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
                 
                 # Rate limit delay after issue processing
                 if rate_limit_delay > 0:
@@ -193,35 +168,36 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             except Exception as e:
                 logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
                 summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
+            
             # 3. PR management via state machine
             if process_prs_flag:
                 try:
                     # Create a separate JediMaster instance for PR processing with appropriate manage_prs setting
-                    pr_jedi = JediMaster(
+                    async with JediMaster(
                         github_token,
                         azure_foundry_endpoint,
                         just_label=just_label_flag,
                         use_topic_filter=not use_file_filter,
                         manage_prs=auto_merge_flag  # enable auto-merge when AUTO_MERGE is true
-                    )
-                    # Use smaller batch size for PR processing to avoid rate limits
-                    pr_results = pr_jedi.manage_pull_requests(repo_full, batch_size=batch_size)
-                    pr_dicts = [asdict(r) for r in pr_results]
-                    repo_block['pr_management'] = pr_dicts
+                    ) as pr_jedi:
+                        # Use smaller batch size for PR processing to avoid rate limits
+                        pr_results = await pr_jedi.manage_pull_requests(repo_full, batch_size=batch_size)
+                        pr_dicts = [asdict(r) for r in pr_results]
+                        repo_block['pr_management'] = pr_dicts
 
-                    status_counter = Counter(r.status for r in pr_results)
-                    summary['pr_management'].append({
-                        'repo': repo_full,
-                        'results': pr_dicts,
-                        'stats': dict(status_counter)
-                    })
+                        status_counter = Counter(r.status for r in pr_results)
+                        summary['pr_management'].append({
+                            'repo': repo_full,
+                            'results': pr_dicts,
+                            'stats': dict(status_counter)
+                        })
 
-                    logging.info(
-                        "[AutomateRepos] PR management results count=%s repo=%s stats=%s",
-                        len(pr_results),
-                        repo_full,
-                        dict(status_counter)
-                    )
+                        logging.info(
+                            "[AutomateRepos] PR management results count=%s repo=%s stats=%s",
+                            len(pr_results),
+                            repo_full,
+                            dict(status_counter)
+                        )
                     
                     # Rate limit delay after PR processing
                     if rate_limit_delay > 0 and pr_results:
@@ -247,16 +223,6 @@ def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 logging.debug(f"[AutomateRepos] Repo block detail (truncated): {repo_block_json[:1500]}...")
         except Exception:
             logging.debug(f"[AutomateRepos] Repo block detail: Failed to serialize")
-
-    # Check final rate limit status
-    logging.info("[AutomateRepos] Checking final GitHub API rate limit status...")
-    try:
-        is_rate_limited, rate_status = jedi._check_rate_limit_status()
-        summary['rate_limit_info']['final'] = rate_status
-        logging.info(f"[AutomateRepos] Final rate limit status: {rate_status}")
-    except Exception as e:
-        logging.error(f"[AutomateRepos] Failed to check final rate limit: {e}")
-        summary['rate_limit_info']['final'] = f"Check failed: {str(e)}"
 
     end_ts = datetime.utcnow().isoformat()
     summary['end'] = end_ts
