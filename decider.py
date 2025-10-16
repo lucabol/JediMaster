@@ -82,7 +82,6 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
-    async def evaluate_issue(self, issue_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub issue using the Agent Framework."""
         try:
             issue_text = self._format_issue_for_llm(issue_data)
