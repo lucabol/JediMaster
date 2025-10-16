@@ -72,14 +72,14 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
         self._client = AzureAIAgentClient(async_credential=self._credential)
+        # Don't need to enter the client - it's not a context manager itself
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        if self._client:
-            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        # Client cleanup is handled automatically
         if self._credential:
-            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+            await self._credential.close()
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
@@ -206,14 +206,14 @@ class PRDeciderAgent:
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
         self._client = AzureAIAgentClient(async_credential=self._credential)
+        # Don't need to enter the client - it's not a context manager itself
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        if self._client:
-            await self._client.__aexit__(exc_type, exc_val, exc_tb)
+        # Client cleanup is handled automatically
         if self._credential:
-            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+            await self._credential.close()
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
