@@ -44,6 +44,7 @@ class CreatorAgent:
     async def __aenter__(self):
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
+        await self._credential.__aenter__()
         self._client = AzureAIAgentClient(async_credential=self._credential)
         return self
 

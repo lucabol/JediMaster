@@ -71,13 +71,12 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
     async def __aenter__(self):
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
+        await self._credential.__aenter__()
         self._client = AzureAIAgentClient(async_credential=self._credential)
-        # Don't need to enter the client - it's not a context manager itself
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        # Close credential properly
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
@@ -205,13 +204,12 @@ class PRDeciderAgent:
     async def __aenter__(self):
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
+        await self._credential.__aenter__()
         self._client = AzureAIAgentClient(async_credential=self._credential)
-        # Don't need to enter the client - it's not a context manager itself
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        # Close credential properly
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
