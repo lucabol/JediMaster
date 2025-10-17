@@ -74,9 +74,6 @@ class CreatorAgent:
         from agent_framework import ChatAgent
         from agent_framework.exceptions import ServiceResponseException
         
-        # Add small delay to avoid rate limiting
-        await asyncio.sleep(0.5)
-        
         # Retry logic for transient errors
         max_retries = 3
         for attempt in range(max_retries):
