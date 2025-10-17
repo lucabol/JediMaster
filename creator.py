@@ -481,6 +481,9 @@ class CreatorAgent:
                 return []
             except json.JSONDecodeError as e:
                 self.logger.error(f"Failed to parse agent response as JSON: {e}")
+                # Log the problematic response for debugging
+                self.logger.error(f"Cleaned response that failed to parse (first 500 chars): {cleaned_response[:500]}")
+                self.logger.error(f"Response around error position (char {e.pos}): ...{cleaned_response[max(0,e.pos-50):min(len(cleaned_response),e.pos+50)]}...")
                 return []
             except Exception as e:
                 self.logger.error(f"Failed to parse agent response: {e}")
