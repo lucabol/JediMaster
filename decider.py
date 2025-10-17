@@ -72,21 +72,18 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
         await self._credential.__aenter__()
-        self._client = AzureAIAgentClient(async_credential=self._credential)
-        await self._client.__aenter__()
+        # Don't create shared client - will create per agent call
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        if self._client:
-            await self._client.__aexit__(exc_type, exc_val, exc_tb)
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
         Helper method to create and run an agent with the system prompt.
-        Uses the credential and client initialized in __aenter__.
+        Creates a new client for each agent (which ChatAgent will manage).
         Includes retry logic for transient service errors.
         
         Args:
@@ -108,10 +105,10 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Use the EXISTING credential and client from __aenter__
-                # Only create a new agent (which is lightweight)
+                # Create a NEW client for each ChatAgent - the ChatAgent will manage its lifecycle
+                # This is the pattern from Microsoft's docs
                 async with ChatAgent(
-                    chat_client=self._client,
+                    chat_client=AzureAIAgentClient(async_credential=self._credential),
                     instructions=self.system_prompt,
                     model=self.model
                 ) as agent:
@@ -239,21 +236,18 @@ class PRDeciderAgent:
         """Async context manager entry."""
         self._credential = DefaultAzureCredential()
         await self._credential.__aenter__()
-        self._client = AzureAIAgentClient(async_credential=self._credential)
-        await self._client.__aenter__()
+        # Don't create shared client - will create per agent call
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        if self._client:
-            await self._client.__aexit__(exc_type, exc_val, exc_tb)
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
     async def _run_agent(self, agent_name: str, prompt: str) -> str:
         """
         Helper method to create and run an agent with the system prompt.
-        Uses the credential and client initialized in __aenter__.
+        Creates a new client for each agent (which ChatAgent will manage).
         Includes retry logic for transient service errors.
         
         Args:
@@ -275,10 +269,10 @@ class PRDeciderAgent:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Use the EXISTING credential and client from __aenter__
-                # Only create a new agent (which is lightweight)
+                # Create a NEW client for each ChatAgent - the ChatAgent will manage its lifecycle
+                # This is the pattern from Microsoft's docs
                 async with ChatAgent(
-                    chat_client=self._client,
+                    chat_client=AzureAIAgentClient(async_credential=self._credential),
                     instructions=self.system_prompt,
                     model=self.model
                 ) as agent:
