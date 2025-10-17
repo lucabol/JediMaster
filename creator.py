@@ -46,10 +46,13 @@ class CreatorAgent:
         self._credential = DefaultAzureCredential()
         await self._credential.__aenter__()
         self._client = AzureAIAgentClient(async_credential=self._credential)
+        await self._client.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
+        if self._client:
+            await self._client.__aexit__(exc_type, exc_val, exc_tb)
         if self._credential:
             await self._credential.__aexit__(exc_type, exc_val, exc_tb)
 
