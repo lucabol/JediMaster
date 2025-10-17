@@ -99,15 +99,18 @@ function Get-AIResourceInfo {
 
 $aiInfo = Get-AIResourceInfo $azureEndpoint $AIResourceGroup $AIResourceName
 
-$repos        = Get-Opt 'AUTOMATION_REPOS' 'lucabol/Hello-World'
-$cronFromEnv  = Get-Opt 'SCHEDULE_CRON' '0 0 */6 * * *'
-$justLabel    = Get-Opt 'JUST_LABEL' '0'
-$processPrs   = Get-Opt 'PROCESS_PRS' '1'
-$autoMerge    = Get-Opt 'AUTO_MERGE' '1'
-$createEnv    = Get-Opt 'CREATE_ISSUES' '0'
-$createCount  = Get-Opt 'CREATE_ISSUES_COUNT' ''
-$useFile      = Get-Opt 'USE_FILE_FILTER' '0'
-$mergeRetries = Get-Opt 'MERGE_MAX_RETRIES' '3'
+$repos            = Get-Opt 'AUTOMATION_REPOS' 'lucabol/Hello-World'
+$cronFromEnv      = Get-Opt 'SCHEDULE_CRON' '0 0 */6 * * *'
+$justLabel        = Get-Opt 'JUST_LABEL' '0'
+$processPrs       = Get-Opt 'PROCESS_PRS' '1'
+$autoMerge        = Get-Opt 'AUTO_MERGE' '1'
+$createEnv        = Get-Opt 'CREATE_ISSUES' '0'
+$createCount      = Get-Opt 'CREATE_ISSUES_COUNT' ''
+$useFile          = Get-Opt 'USE_FILE_FILTER' '0'
+$mergeRetries     = Get-Opt 'MERGE_MAX_RETRIES' '3'
+$batchSize        = Get-Opt 'BATCH_SIZE' '5'
+$rateLimitDelay   = Get-Opt 'RATE_LIMIT_DELAY' '2.0'
+$similarityThresh = Get-Opt 'SIMILARITY_THRESHOLD' ''
 
 $ScheduleCron = $cronFromEnv
 
@@ -122,9 +125,12 @@ $settings = @(
   "AUTO_MERGE=$autoMerge"
   "CREATE_ISSUES=$createEnv"
   $( if($createCount){ "CREATE_ISSUES_COUNT=$createCount" } )
+  $( if($similarityThresh){ "SIMILARITY_THRESHOLD=$similarityThresh" } )
   "USE_FILE_FILTER=$useFile"
   "SCHEDULE_CRON=$ScheduleCron"
   "MERGE_MAX_RETRIES=$mergeRetries"
+  "BATCH_SIZE=$batchSize"
+  "RATE_LIMIT_DELAY=$rateLimitDelay"
 )
 
 # Configure managed identity and role assignments

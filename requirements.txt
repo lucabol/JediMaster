@@ -4,6 +4,7 @@
 
 azure-functions
 requests>=2.31.0
+agent-framework
 openai>=1.0.0
 azure-identity>=1.15.0
 python-dotenv>=1.0.0
