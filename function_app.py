@@ -34,7 +34,7 @@ DEFAULT_CRON = "0 0 */6 * * *"  # every 6 hours
 schedule_expr = os.getenv("SCHEDULE_CRON", DEFAULT_CRON)
 
 @app.timer_trigger(schedule=schedule_expr, arg_name="automationTimer", run_on_startup=False, use_monitor=False)
-def AutomateRepos(automationTimer: func.TimerRequest) -> None:
+async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     start_ts = datetime.utcnow().isoformat()
     logging.info(f"[AutomateRepos] Invocation start {start_ts} schedule={schedule_expr}")
     if automationTimer.past_due:
