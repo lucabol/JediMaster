@@ -1930,6 +1930,297 @@ class JediMaster:
             )
         return report
 
+    async def orchestrated_run(self, repo_name: str) -> 'OrchestrationReport':
+        """Execute an orchestrated run on a repository using LLM-based strategic planning.
+        
+        This method uses the orchestrator agent to:
+        1. Analyze repository state (issues, PRs, capacity)
+        2. Check resource constraints (API quota, Copilot capacity)
+        3. Create strategic execution plan (what workflows, in what order)
+        4. Execute the planned workflows
+        5. Report outcomes and improvements
+        
+        Args:
+            repo_name: Full repository name (owner/repo)
+            
+        Returns:
+            OrchestrationReport with comprehensive metrics
+        """
+        from datetime import datetime
+        from core.models import OrchestrationReport
+        from agents.orchestrator import OrchestratorAgent
+        
+        start_time = datetime.now()
+        self.logger.info(f"[Orchestrator] Starting orchestrated run for {repo_name}")
+        
+        # Import orchestrator
+        async with OrchestratorAgent(
+            github=self.github,
+            azure_foundry_endpoint=self.azure_foundry_endpoint,
+            model=self.model
+        ) as orchestrator:
+            
+            # Step 1: Analyze repository state (fast, no LLM)
+            self.logger.info("[Orchestrator] Step 1/4: Analyzing repository state...")
+            initial_state = orchestrator.state_analyzer.analyze(repo_name)
+            
+            self.logger.info("[Orchestrator] Step 2/4: Checking resources...")
+            initial_resources = orchestrator.resource_monitor.check_resources(repo_name)
+            
+            self.logger.info("[Orchestrator] Step 3/4: Prioritizing workload...")
+            workload = orchestrator.workload_prioritizer.prioritize(repo_name, initial_state)
+            
+            # Step 2: Create execution plan (ONE LLM call)
+            self.logger.info("[Orchestrator] Step 4/4: Creating execution plan...")
+            plan = await orchestrator.create_execution_plan(
+                initial_state, initial_resources, workload
+            )
+            
+            self.logger.info(f"[Orchestrator] Strategy: {plan.strategy}")
+            for workflow in plan.workflows:
+                self.logger.info(f"  - {workflow.name} (batch={workflow.batch_size}): {workflow.reasoning}")
+            
+            # Step 3: Execute workflows
+            self.logger.info("[Orchestrator] Executing workflows...")
+            workflow_results = []
+            
+            for workflow in plan.workflows:
+                result = await self._execute_workflow(repo_name, workflow, workload)
+                workflow_results.append(result)
+            
+            # Step 4: Final analysis
+            self.logger.info("[Orchestrator] Collecting final metrics...")
+            final_state = orchestrator.state_analyzer.analyze(repo_name)
+            final_resources = orchestrator.resource_monitor.check_resources(repo_name)
+            
+            # Calculate metrics
+            duration = (datetime.now() - start_time).total_seconds()
+            backlog_reduction = (initial_state.open_issues_total + initial_state.open_prs_total) - \
+                               (final_state.open_issues_total + final_state.open_prs_total)
+            
+            # Calculate health scores
+            health_before = orchestrator.calculate_health_score(initial_state)
+            health_after = orchestrator.calculate_health_score(final_state)
+            
+            return OrchestrationReport(
+                repo=repo_name,
+                timestamp=datetime.now(),
+                initial_state=initial_state,
+                initial_resources=initial_resources,
+                prioritized_workload=workload,
+                execution_plan=plan,
+                workflow_results=workflow_results,
+                final_state=final_state,
+                final_resources=final_resources,
+                total_duration_seconds=duration,
+                backlog_reduction=backlog_reduction,
+                health_score_before=health_before,
+                health_score_after=health_after
+            )
+    
+    async def _execute_workflow(self, repo_name: str, workflow: 'WorkflowStep', workload: 'PrioritizedWorkload') -> 'WorkflowResult':
+        """Execute a single workflow step."""
+        from core.models import WorkflowResult
+        import time
+        
+        start = time.time()
+        self.logger.info(f"[Orchestrator] Executing workflow: {workflow.name} (batch={workflow.batch_size})")
+        
+        try:
+            if workflow.name == 'merge_ready_prs':
+                # Merge ready PRs (no LLM needed)
+                results = await self._execute_merge_workflow(repo_name, workflow.batch_size, workload.quick_wins)
+                return WorkflowResult(
+                    workflow_name=workflow.name,
+                    success=True,
+                    items_processed=len(results),
+                    items_succeeded=sum(1 for r in results if r.status == 'merged'),
+                    items_failed=sum(1 for r in results if r.status == 'error'),
+                    duration_seconds=time.time() - start,
+                    details=results
+                )
+            
+            elif workflow.name == 'flag_blocked_prs':
+                # Flag blocked PRs (no LLM needed)
+                results = await self._execute_flag_blocked_workflow(repo_name, workload.blocked_prs)
+                return WorkflowResult(
+                    workflow_name=workflow.name,
+                    success=True,
+                    items_processed=len(results),
+                    items_succeeded=len(results),
+                    items_failed=0,
+                    duration_seconds=time.time() - start,
+                    details=results
+                )
+            
+            elif workflow.name == 'review_prs':
+                # Review PRs (uses PRDeciderAgent LLM)
+                pr_numbers = workload.pending_review_prs[:workflow.batch_size]
+                results = await self._execute_review_workflow(repo_name, pr_numbers)
+                return WorkflowResult(
+                    workflow_name=workflow.name,
+                    success=True,
+                    items_processed=len(results),
+                    items_succeeded=sum(1 for r in results if r.status != 'error'),
+                    items_failed=sum(1 for r in results if r.status == 'error'),
+                    duration_seconds=time.time() - start,
+                    details=results
+                )
+            
+            elif workflow.name == 'process_issues':
+                # Process issues (uses DeciderAgent LLM)
+                issue_numbers = workload.unprocessed_issues[:workflow.batch_size]
+                results = await self._execute_issue_workflow(repo_name, issue_numbers)
+                return WorkflowResult(
+                    workflow_name=workflow.name,
+                    success=True,
+                    items_processed=len(results),
+                    items_succeeded=sum(1 for r in results if r.status == 'assigned'),
+                    items_failed=sum(1 for r in results if r.status == 'error'),
+                    duration_seconds=time.time() - start,
+                    details=results
+                )
+            
+            elif workflow.name == 'create_issues':
+                # Create issues (uses CreatorAgent LLM)
+                async with CreatorAgent(
+                    self.github_token,
+                    self.azure_foundry_endpoint,
+                    repo_full_name=repo_name
+                ) as creator:
+                    results = await creator.create_issues(max_issues=workflow.batch_size)
+                    return WorkflowResult(
+                        workflow_name=workflow.name,
+                        success=True,
+                        items_processed=len(results),
+                        items_succeeded=sum(1 for r in results if r.get('status') == 'created'),
+                        items_failed=sum(1 for r in results if r.get('status') == 'error'),
+                        duration_seconds=time.time() - start,
+                        details=results
+                    )
+            
+            else:
+                self.logger.warning(f"Unknown workflow: {workflow.name}")
+                return WorkflowResult(
+                    workflow_name=workflow.name,
+                    success=False,
+                    items_processed=0,
+                    items_succeeded=0,
+                    items_failed=0,
+                    duration_seconds=time.time() - start,
+                    error=f"Unknown workflow: {workflow.name}"
+                )
+                
+        except Exception as e:
+            self.logger.error(f"Workflow {workflow.name} failed: {e}")
+            return WorkflowResult(
+                workflow_name=workflow.name,
+                success=False,
+                items_processed=0,
+                items_succeeded=0,
+                items_failed=0,
+                duration_seconds=time.time() - start,
+                error=str(e)
+            )
+    
+    async def _execute_merge_workflow(self, repo_name: str, batch_size: int, pr_numbers: List[int]) -> List[PRRunResult]:
+        """Execute merge workflow for ready PRs."""
+        results = []
+        repo = self.github.get_repo(repo_name)
+        
+        for pr_number in pr_numbers[:batch_size]:
+            try:
+                pr = repo.get_pull(pr_number)
+                # Use existing state machine to handle the merge
+                pr_results = await self._process_pr_state_machine(pr)
+                results.extend(pr_results)
+            except Exception as e:
+                self.logger.error(f"Failed to merge PR #{pr_number}: {e}")
+                results.append(PRRunResult(
+                    repo=repo_name,
+                    pr_number=pr_number,
+                    title=f"PR #{pr_number}",
+                    status='error',
+                    details=str(e),
+                    action='merge_failed'
+                ))
+        return results
+    
+    async def _execute_flag_blocked_workflow(self, repo_name: str, pr_numbers: List[int]) -> List[Dict[str, Any]]:
+        """Flag blocked PRs for human review."""
+        results = []
+        repo = self.github.get_repo(repo_name)
+        
+        for pr_number in pr_numbers:
+            try:
+                pr = repo.get_pull(pr_number)
+                # Add human escalation label
+                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                # Add comment explaining the situation
+                pr.create_comment(
+                    f"This PR has exceeded the maximum merge retry limit and needs human review. "
+                    f"Please investigate the merge conflicts or other blocking issues."
+                )
+                self.logger.info(f"Flagged PR #{pr_number} for human review")
+                results.append({
+                    'pr_number': pr_number,
+                    'status': 'flagged',
+                    'action': 'added human-review label'
+                })
+            except Exception as e:
+                self.logger.error(f"Failed to flag PR #{pr_number}: {e}")
+                results.append({
+                    'pr_number': pr_number,
+                    'status': 'error',
+                    'error': str(e)
+                })
+        return results
+    
+    async def _execute_review_workflow(self, repo_name: str, pr_numbers: List[int]) -> List[PRRunResult]:
+        """Execute review workflow for pending PRs."""
+        results = []
+        repo = self.github.get_repo(repo_name)
+        
+        for pr_number in pr_numbers:
+            try:
+                pr = repo.get_pull(pr_number)
+                # Use existing state machine to handle the review
+                pr_results = await self._process_pr_state_machine(pr)
+                results.extend(pr_results)
+            except Exception as e:
+                self.logger.error(f"Failed to review PR #{pr_number}: {e}")
+                results.append(PRRunResult(
+                    repo=repo_name,
+                    pr_number=pr_number,
+                    title=f"PR #{pr_number}",
+                    status='error',
+                    details=str(e),
+                    action='review_failed'
+                ))
+        return results
+    
+    async def _execute_issue_workflow(self, repo_name: str, issue_numbers: List[int]) -> List[IssueResult]:
+        """Execute issue processing workflow."""
+        results = []
+        repo = self.github.get_repo(repo_name)
+        
+        for issue_number in issue_numbers:
+            try:
+                issue = repo.get_issue(issue_number)
+                result = await self.process_issue(issue, repo_name)
+                results.append(result)
+            except Exception as e:
+                self.logger.error(f"Failed to process issue #{issue_number}: {e}")
+                results.append(IssueResult(
+                    repo=repo_name,
+                    issue_number=issue_number,
+                    title=f"Issue #{issue_number}",
+                    url='',
+                    status='error',
+                    error_message=str(e)
+                ))
+        return results
+
     def save_report(self, report: ProcessingReport, filename: Optional[str] = None) -> str:
         out_filename: str
         if filename is None:
@@ -2027,6 +2318,73 @@ class JediMaster:
                 empty_message="No issues processed",
             )
         )
+
+    def print_orchestration_report(self, report: 'OrchestrationReport'):
+        """Print a comprehensive orchestration report."""
+        from core.models import OrchestrationReport
+        
+        print("\n" + "="*80)
+        print(f"ORCHESTRATION REPORT: {report.repo}")
+        print("="*80)
+        
+        # Initial State
+        print("\nINITIAL STATE:")
+        print(f"  Issues: {report.initial_state.open_issues_total} open")
+        print(f"    - Unprocessed: {report.initial_state.open_issues_unprocessed}")
+        print(f"    - Assigned to Copilot: {report.initial_state.open_issues_assigned_to_copilot}")
+        print(f"  PRs: {report.initial_state.open_prs_total} open")
+        print(f"    - Ready to merge: {report.initial_state.prs_ready_to_merge} (quick wins!)")
+        print(f"    - Pending review: {report.initial_state.prs_pending_review}")
+        print(f"    - Changes requested: {report.initial_state.prs_changes_requested}")
+        print(f"    - Blocked: {report.initial_state.prs_blocked}")
+        
+        # Resources
+        print("\nRESOURCES:")
+        print(f"  GitHub API: {report.initial_resources.github_api_remaining}/{report.initial_resources.github_api_limit} calls")
+        print(f"  Copilot: {report.initial_resources.copilot_assigned_issues}/{report.initial_resources.copilot_max_concurrent} issues ({report.initial_resources.copilot_available_slots} slots available)")
+        if report.initial_resources.warnings:
+            print("  Warnings:")
+            for warning in report.initial_resources.warnings:
+                print(f"    - {warning}")
+        
+        # Strategy
+        print("\nSTRATEGY:")
+        print(f"  {report.execution_plan.strategy}")
+        
+        # Workflows
+        print("\nWORKFLOWS EXECUTED:")
+        for workflow in report.execution_plan.workflows:
+            print(f"  • {workflow.name} (batch={workflow.batch_size})")
+            if workflow.reasoning:
+                print(f"    Reasoning: {workflow.reasoning}")
+        
+        if report.execution_plan.skip_workflows:
+            print("\nWORKFLOWS SKIPPED:")
+            for workflow_name in report.execution_plan.skip_workflows:
+                print(f"  • {workflow_name}")
+        
+        # Results
+        print("\nRESULTS:")
+        for result in report.workflow_results:
+            status = "✓" if result.success else "✗"
+            print(f"  {status} {result.workflow_name}:")
+            print(f"     Processed: {result.items_processed}, Succeeded: {result.items_succeeded}, Failed: {result.items_failed}")
+            print(f"     Duration: {result.duration_seconds:.1f}s")
+            if result.error:
+                print(f"     Error: {result.error}")
+        
+        # Final State
+        print("\nFINAL STATE:")
+        print(f"  Issues: {report.final_state.open_issues_total} open (was {report.initial_state.open_issues_total})")
+        print(f"  PRs: {report.final_state.open_prs_total} open (was {report.initial_state.open_prs_total})")
+        print(f"  Backlog reduction: {report.backlog_reduction} items")
+        
+        # Metrics
+        print("\nMETRICS:")
+        print(f"  Duration: {report.total_duration_seconds:.1f}s")
+        print(f"  Health score: {report.health_score_before:.2f} → {report.health_score_after:.2f} ({report.health_score_after - report.health_score_before:+.2f})")
+        
+        print("\n" + "="*80)
 
     def print_pr_results(self, heading: str, pr_results: List[PRRunResult]):
         print(f"\n{heading}")

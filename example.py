@@ -202,6 +202,8 @@ async def main():
                        help='Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)')
     parser.add_argument('--manage-prs', action='store_true',
                        help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
+    parser.add_argument('--orchestrate', action='store_true',
+                       help='Use intelligent orchestration (LLM-based strategic planning) to decide workflows')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--create-issues-count', type=int, default=3,
@@ -355,6 +357,25 @@ async def main():
             jedimaster.print_pr_results("AUTO-MERGE RESULTS", all_merge_results)
             
             print(f"\nAuto-merge complete.")
+            return
+        
+        # Orchestrated mode - intelligent workflow selection
+        if args.orchestrate:
+            if args.user:
+                print("--orchestrate does not support --user mode. Please specify repositories explicitly.")
+                return
+            
+            repo_names = args.repositories
+            print(f"[Orchestrator] Running intelligent orchestration on: {repo_names}")
+            
+            for repo_name in repo_names:
+                print(f"\n{'='*80}")
+                print(f"Orchestrating: {repo_name}")
+                print(f"{'='*80}")
+                
+                report = await jedimaster.orchestrated_run(repo_name)
+                jedimaster.print_orchestration_report(report)
+            
             return
         
         # Normal processing mode (issues/PRs based on other flags)

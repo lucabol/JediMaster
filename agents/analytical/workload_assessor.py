@@ -1,0 +1,301 @@
+"""Workload assessor agent - prioritizes items needing attention."""
+
+import logging
+import asyncio
+from typing import List, Dict, Any
+from datetime import datetime, timedelta, timezone
+from github import Github
+from github.Issue import Issue
+from github.PullRequest import PullRequest
+
+from core.models import WorkloadAssessment
+from typing import Optional
+
+
+class WorkloadAssessorAgent:
+    """Assesses and prioritizes repository workload."""
+    
+    # Priority labels (high to low)
+    PRIORITY_LABELS = ['P0', 'P1', 'critical', 'urgent', 'security', 'breaking']
+    
+    # Urgency thresholds
+    STALE_THRESHOLD_DAYS = 14
+    VERY_STALE_THRESHOLD_DAYS = 30
+    
+    def __init__(self, github_client: Github):
+        """Initialize the workload assessor.
+        
+        Args:
+            github_client: GitHub API client
+        """
+        self.github = github_client
+        self.logger = logging.getLogger(f"{__name__}.WorkloadAssessorAgent")
+    
+    async def assess(self, repo_name: str, metrics: Optional[Any] = None) -> WorkloadAssessment:
+        """Assess and prioritize repository workload.
+        
+        Args:
+            repo_name: Full repository name (owner/repo)
+            metrics: Optional (unused, for backward compatibility)
+            
+        Returns:
+            WorkloadAssessment with prioritized items
+        """
+        self.logger.info(f"Assessing workload for {repo_name}")
+        
+        # Run the sync assessment in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        assessment = await loop.run_in_executor(None, self._assess_sync, repo_name)
+        return assessment
+    
+    def _assess_sync(self, repo_name: str) -> WorkloadAssessment:
+        """Synchronous assessment method that does all the GitHub API calls."""
+        assessment = WorkloadAssessment()
+        
+        try:
+            repo = self.github.get_repo(repo_name)
+            
+            # Prioritize issues - limit to first 100 for performance
+            self.logger.info("Prioritizing issues...")
+            issues = []
+            for i, issue in enumerate(repo.get_issues(state='open')):
+                if not issue.pull_request:  # Skip PRs
+                    issues.append(issue)
+                if i >= 100:  # Limit total items checked
+                    break
+            
+            issue_priorities = self._prioritize_issues(issues)
+            
+            assessment.high_priority_issues = issue_priorities['high']
+            assessment.medium_priority_issues = issue_priorities['medium']
+            assessment.low_priority_issues = issue_priorities['low']
+            
+            # Prioritize PRs - limit to first 50 for performance
+            self.logger.info("Prioritizing PRs...")
+            prs = []
+            for i, pr in enumerate(repo.get_pulls(state='open')):
+                prs.append(pr)
+                if i >= 50:
+                    break
+            
+            pr_priorities = self._prioritize_prs(prs)
+            
+            assessment.high_priority_prs = pr_priorities['high']
+            assessment.medium_priority_prs = pr_priorities['medium']
+            assessment.low_priority_prs = pr_priorities['low']
+            
+            # Recommend batch sizes based on workload
+            total_high_issues = len(assessment.high_priority_issues)
+            total_med_issues = len(assessment.medium_priority_issues)
+            total_high_prs = len(assessment.high_priority_prs)
+            total_med_prs = len(assessment.medium_priority_prs)
+            
+            assessment.suggested_issue_batch_size = self._recommend_issue_batch_size(
+                total_high_issues,
+                total_med_issues,
+            )
+            assessment.suggested_pr_batch_size = self._recommend_pr_batch_size(
+                total_high_prs,
+                total_med_prs,
+            )
+            
+            # Generate rationale
+            assessment.rationale = (
+                f"Found {total_high_issues} high-priority and {total_med_issues} medium-priority issues. "
+                f"Found {total_high_prs} high-priority and {total_med_prs} medium-priority PRs."
+            )
+            
+            self.logger.info(
+                f"Assessment complete: {len(assessment.high_priority_issues)} high-priority issues, "
+                f"{len(assessment.high_priority_prs)} high-priority PRs"
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error assessing workload for {repo_name}: {e}")
+        
+        return assessment
+    
+    def _prioritize_issues(self, issues: List[Issue]) -> Dict[str, List[int]]:
+        """Prioritize issues into high/medium/low buckets.
+        
+        Args:
+            issues: List of GitHub issues
+            
+        Returns:
+            Dict with 'high', 'medium', 'low' lists of issue numbers
+        """
+        high = []
+        medium = []
+        low = []
+        
+        now = datetime.now(timezone.utc)
+        
+        for issue in issues:
+            # Skip pull requests
+            if issue.pull_request:
+                continue
+            
+            score = 0
+            labels = [label.name for label in issue.labels]
+            
+            # Check if already processed by Copilot (has Copilot-related labels)
+            has_copilot_labels = any(
+                'copilot' in label.lower() or 
+                'no-github-copilot' in label.lower()
+                for label in labels
+            )
+            
+            # If issue doesn't have Copilot labels, it needs processing - give it base score
+            if not has_copilot_labels:
+                score += 25  # Base score for unprocessed issues
+            else:
+                # Already processed, lower priority for re-evaluation
+                score -= 20
+            
+            # Check for priority labels
+            for priority_label in self.PRIORITY_LABELS:
+                if any(priority_label.lower() in label.lower() for label in labels):
+                    score += 50
+                    break
+            
+            # Check for security/breaking labels
+            if any('security' in label.lower() for label in labels):
+                score += 30
+            if any('breaking' in label.lower() for label in labels):
+                score += 20
+            
+            # Age factor
+            age_days = (now - issue.created_at).days
+            if age_days > self.VERY_STALE_THRESHOLD_DAYS:
+                score += 15
+            elif age_days > self.STALE_THRESHOLD_DAYS:
+                score += 10
+            
+            # Community engagement (comments, reactions)
+            if issue.comments > 10:
+                score += 10
+            elif issue.comments > 5:
+                score += 5
+            
+            # Categorize by score
+            if score >= 40:
+                high.append(issue.number)
+            elif score >= 20:
+                medium.append(issue.number)
+            else:
+                low.append(issue.number)
+        
+        return {'high': high, 'medium': medium, 'low': low}
+    
+    def _prioritize_prs(self, prs: List[PullRequest]) -> Dict[str, List[int]]:
+        """Prioritize PRs into high/medium/low buckets.
+        
+        Processes ALL open PRs since the state machine handles them through different states.
+        
+        Args:
+            prs: List of GitHub pull requests
+            
+        Returns:
+            Dict with 'high', 'medium', 'low' lists of PR numbers
+        """
+        high = []
+        medium = []
+        low = []
+        
+        now = datetime.now(timezone.utc)
+        
+        for pr in prs:
+            score = 0
+            
+            # Skip draft PRs (lower priority)
+            if pr.draft:
+                low.append(pr.number)
+                continue
+            
+            # Check for priority labels
+            labels = [label.name for label in pr.labels]
+            for priority_label in self.PRIORITY_LABELS:
+                if any(priority_label.lower() in label.lower() for label in labels):
+                    score += 50
+                    break
+            
+            # Ready to merge status
+            if any('ready' in label.lower() and 'merge' in label.lower() for label in labels):
+                score += 30
+            
+            # Age factor
+            age_days = (now - pr.created_at).days
+            if age_days > self.VERY_STALE_THRESHOLD_DAYS:
+                score += 20
+            elif age_days > self.STALE_THRESHOLD_DAYS:
+                score += 10
+            
+            # Has reviews
+            if pr.review_comments > 0:
+                score += 10
+            
+            # Check merge conflicts
+            if pr.mergeable_state == 'dirty':
+                score -= 15  # Has conflicts, lower priority
+            elif pr.mergeable_state == 'clean':
+                score += 15  # No conflicts, higher priority
+            
+            # Categorize by score
+            if score >= 40:
+                high.append(pr.number)
+            elif score >= 20:
+                medium.append(pr.number)
+            else:
+                low.append(pr.number)
+        
+        return {'high': high, 'medium': medium, 'low': low}
+    
+    def _recommend_issue_batch_size(
+        self, high_count: int, medium_count: int
+    ) -> int:
+        """Recommend batch size for issue processing.
+        
+        Args:
+            high_count: Number of high-priority issues
+            medium_count: Number of medium-priority issues
+            
+        Returns:
+            Recommended batch size
+        """
+        # Simple logic based on workload
+        total = high_count + medium_count
+        
+        if total == 0:
+            return 10  # Default
+        elif total < 5:
+            return total  # Process all
+        elif total < 20:
+            return 10
+        elif total < 50:
+            return 15
+        else:
+            return 20  # Cap at 20 per batch
+    
+    def _recommend_pr_batch_size(
+        self, high_count: int, medium_count: int
+    ) -> int:
+        """Recommend batch size for PR processing.
+        
+        Args:
+            high_count: Number of high-priority PRs
+            medium_count: Number of medium-priority PRs
+            
+        Returns:
+            Recommended batch size
+        """
+        # PRs take more time to review, so smaller batches
+        total = high_count + medium_count
+        
+        if total == 0:
+            return 5  # Default
+        elif total < 3:
+            return total  # Process all
+        elif total < 10:
+            return 5
+        else:
+            return 10  # Cap at 10 per batch
