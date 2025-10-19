@@ -355,19 +355,22 @@ class JediMaster:
         except Exception as exc:
             self.logger.error(f"Failed to refresh PR #{pr.number} before merge: {exc}")
 
+        # Clean up any old auto-merge-disabled comments (no longer used)
+        self._remove_comment_with_tag(pr, 'copilot:auto-merge-disabled')
+
         if not self.manage_prs:
-            message = "Auto-merge is disabled; waiting for a maintainer to merge this PR manually."
-            self._ensure_comment_with_tag(pr, 'copilot:auto-merge-disabled', message)
+            # When manage_prs is disabled, don't interfere with ready-to-merge PRs
+            # Just record the state and return (orchestrator or manual merge will handle it)
             results.append(
                 PRRunResult(
                     repo=repo_full,
                     pr_number=pr.number,
                     title=pr.title,
                     status='ready_to_merge',
-                    details=message,
+                    details='PR ready to merge (managed externally)',
                     state_before=STATE_READY_TO_MERGE,
                     state_after=STATE_READY_TO_MERGE,
-                    action='auto_merge_disabled',
+                    action='ready_external_merge',
                 )
             )
             return results
@@ -965,6 +968,22 @@ class JediMaster:
             pr.create_issue_comment(body)
         except Exception as exc:
             self.logger.error(f"Failed to create tagged comment on PR #{getattr(pr, 'number', '?')}: {exc}")
+
+    def _remove_comment_with_tag(self, pr, tag: str) -> None:
+        """Remove comments with a specific tag."""
+        marker = f"[{tag}]"
+        try:
+            existing = pr.get_issue_comments()
+            for comment in existing:
+                body = comment.body or ''
+                if marker in body:
+                    try:
+                        comment.delete()
+                        self.logger.info(f"Removed comment with tag '{tag}' from PR #{pr.number}")
+                    except Exception as exc:
+                        self.logger.error(f"Failed to delete comment {comment.id} from PR #{pr.number}: {exc}")
+        except Exception as exc:
+            self.logger.error(f"Failed to enumerate comments for PR #{getattr(pr, 'number', '?')}: {exc}")
 
     def _has_label(self, pr, label_name: str) -> bool:
         try:
