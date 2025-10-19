@@ -1224,6 +1224,14 @@ class JediMaster:
         requested_reviewers = metadata.get('requested_reviewers', [])
         self.logger.info(f"PR #{pr.number}: draft={is_draft}, reviewers={requested_reviewers}")
         
+        # Check for draft PRs with human reviewers (Copilot finished and wants review)
+        if is_draft and requested_reviewers:
+            human_reviewers = [r for r in requested_reviewers if 'copilot' not in r.lower()]
+            if human_reviewers:
+                # Draft with human reviewers requested = Copilot done, needs review
+                self.logger.info(f"PR #{pr.number}: Draft with human reviewers {human_reviewers}, treating as needs_review")
+                needs_review = True
+        
         if copilot_review_requested:
             # If Copilot review is explicitly requested, it needs review regardless of draft status
             needs_review = True
@@ -1247,13 +1255,6 @@ class JediMaster:
                 time_since_commit = datetime.datetime.now(datetime.timezone.utc) - last_commit_time
                 if time_since_commit.total_seconds() < 3600:  # 1 hour
                     needs_review = True
-
-        # Key insight: If a draft PR has human reviewers requested, Copilot likely finished work
-        if is_draft and requested_reviewers:
-            # Draft with human reviewers requested suggests Copilot finished and wants human review
-            human_reviewers = [r for r in requested_reviewers if 'copilot' not in r.lower()]
-            if human_reviewers:
-                needs_review = True
 
         if needs_review:
             reason = 'awaiting_review'
