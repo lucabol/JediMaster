@@ -1962,7 +1962,7 @@ class JediMaster:
         async with OrchestratorAgent(
             github=self.github,
             azure_foundry_endpoint=self.azure_foundry_endpoint,
-            model=self.model,
+            model=None,  # Will use AZURE_AI_MODEL env var
             enable_issue_creation=enable_issue_creation
         ) as orchestrator:
             
