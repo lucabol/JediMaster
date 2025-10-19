@@ -24,10 +24,11 @@ from agents.analytical import RepoStateAnalyzer, ResourceMonitor, WorkloadPriori
 class OrchestratorAgent:
     """LLM-based strategic planner for repository automation."""
     
-    def __init__(self, github: Github, azure_foundry_endpoint: str, model: str = None):
+    def __init__(self, github: Github, azure_foundry_endpoint: str, model: str = None, enable_issue_creation: bool = False):
         self.github = github
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
+        self.enable_issue_creation = enable_issue_creation
         self.logger = logging.getLogger('jedimaster.orchestrator')
         self._credential: Optional[DefaultAzureCredential] = None
         
@@ -36,7 +37,18 @@ class OrchestratorAgent:
         self.resource_monitor = ResourceMonitor(github)
         self.workload_prioritizer = WorkloadPrioritizer(github)
         
-        self.system_prompt = """You are a strategic orchestrator managing GitHub repository automation.
+        # Build system prompt dynamically based on configuration
+        available_workflows = [
+            "- merge_ready_prs: Merge approved PRs (no LLM, fast, highest priority)",
+            "- review_prs: Review PRs needing evaluation (uses PRDeciderAgent LLM)",
+            "- process_issues: Evaluate and assign issues (uses DeciderAgent LLM)",
+            "- flag_blocked_prs: Mark PRs that exceeded retry limit (no LLM)"
+        ]
+        
+        if self.enable_issue_creation:
+            available_workflows.append("- create_issues: Generate new issues (uses CreatorAgent LLM)")
+        
+        self.system_prompt = f"""You are a strategic orchestrator managing GitHub repository automation.
 Your goal is to reduce the number of open issues and PRs efficiently while respecting constraints.
 
 IMPORTANT PRINCIPLES:
@@ -53,11 +65,7 @@ You will receive:
 - Prioritized workload (which items need attention)
 
 Available workflows:
-- merge_ready_prs: Merge approved PRs (no LLM, fast, highest priority)
-- review_prs: Review PRs needing evaluation (uses PRDeciderAgent LLM)
-- process_issues: Evaluate and assign issues (uses DeciderAgent LLM)
-- create_issues: Generate new issues (uses CreatorAgent LLM)
-- flag_blocked_prs: Mark PRs that exceeded retry limit (no LLM)
+{chr(10).join(available_workflows)}
 
 STRATEGIC RULES:
 1. If Copilot at capacity → focus on clearing PRs, skip issue assignments
@@ -65,21 +73,22 @@ STRATEGIC RULES:
 3. If backlog >20 items → skip issue creation
 4. If blocked PRs exist → flag them for humans
 5. Adapt batch sizes to available resources
+{"6. Issue creation is ENABLED - only create if backlog is healthy" if self.enable_issue_creation else "6. Issue creation is DISABLED - do not include create_issues in workflows"}
 
 Return ONLY valid JSON matching this schema:
-{
+{{
   "strategy": "Brief explanation of approach",
   "workflows": [
-    {
+    {{
       "name": "workflow_name",
       "batch_size": number,
       "reasoning": "why this workflow and batch size"
-    }
+    }}
   ],
   "skip_workflows": ["workflow_name"],
   "estimated_api_calls": number,
   "warnings": ["any concerns"]
-}
+}}
 """
     
     async def __aenter__(self):

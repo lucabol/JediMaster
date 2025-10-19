@@ -1930,7 +1930,7 @@ class JediMaster:
             )
         return report
 
-    async def orchestrated_run(self, repo_name: str) -> 'OrchestrationReport':
+    async def orchestrated_run(self, repo_name: str, enable_issue_creation: bool = False) -> 'OrchestrationReport':
         """Execute an orchestrated run on a repository using LLM-based strategic planning.
         
         This method uses the orchestrator agent to:
@@ -1942,6 +1942,7 @@ class JediMaster:
         
         Args:
             repo_name: Full repository name (owner/repo)
+            enable_issue_creation: Allow orchestrator to create new issues (default: False)
             
         Returns:
             OrchestrationReport with comprehensive metrics
@@ -1952,12 +1953,17 @@ class JediMaster:
         
         start_time = datetime.now()
         self.logger.info(f"[Orchestrator] Starting orchestrated run for {repo_name}")
+        if enable_issue_creation:
+            self.logger.info("[Orchestrator] Issue creation ENABLED")
+        else:
+            self.logger.info("[Orchestrator] Issue creation DISABLED (use --enable-issue-creation to enable)")
         
         # Import orchestrator
         async with OrchestratorAgent(
             github=self.github,
             azure_foundry_endpoint=self.azure_foundry_endpoint,
-            model=self.model
+            model=self.model,
+            enable_issue_creation=enable_issue_creation
         ) as orchestrator:
             
             # Step 1: Analyze repository state (fast, no LLM)

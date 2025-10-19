@@ -204,6 +204,8 @@ async def main():
                        help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
     parser.add_argument('--orchestrate', action='store_true',
                        help='Use intelligent orchestration (LLM-based strategic planning) to decide workflows')
+    parser.add_argument('--enable-issue-creation', action='store_true',
+                       help='Allow orchestrator to create new issues (only used with --orchestrate)')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--create-issues-count', type=int, default=3,
@@ -368,12 +370,19 @@ async def main():
             repo_names = args.repositories
             print(f"[Orchestrator] Running intelligent orchestration on: {repo_names}")
             
+            # Check for issue creation flag
+            enable_issue_creation = getattr(args, 'enable_issue_creation', False)
+            if enable_issue_creation:
+                print("[Orchestrator] Issue creation ENABLED")
+            else:
+                print("[Orchestrator] Issue creation DISABLED (use --enable-issue-creation to enable)")
+            
             for repo_name in repo_names:
                 print(f"\n{'='*80}")
                 print(f"Orchestrating: {repo_name}")
                 print(f"{'='*80}")
                 
-                report = await jedimaster.orchestrated_run(repo_name)
+                report = await jedimaster.orchestrated_run(repo_name, enable_issue_creation=enable_issue_creation)
                 jedimaster.print_orchestration_report(report)
             
             return
