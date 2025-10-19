@@ -2130,26 +2130,38 @@ class JediMaster:
             )
     
     async def _execute_merge_workflow(self, repo_name: str, batch_size: int, pr_numbers: List[int]) -> List[PRRunResult]:
-        """Execute merge workflow for ready PRs."""
+        """Execute merge workflow for ready PRs.
+        
+        Note: Temporarily enables manage_prs for orchestrated merges.
+        """
         results = []
         repo = self.github.get_repo(repo_name)
         
-        for pr_number in pr_numbers[:batch_size]:
-            try:
-                pr = repo.get_pull(pr_number)
-                # Use existing state machine to handle the merge
-                pr_results = await self._process_pr_state_machine(pr)
-                results.extend(pr_results)
-            except Exception as e:
-                self.logger.error(f"Failed to merge PR #{pr_number}: {e}")
-                results.append(PRRunResult(
-                    repo=repo_name,
-                    pr_number=pr_number,
-                    title=f"PR #{pr_number}",
-                    status='error',
-                    details=str(e),
-                    action='merge_failed'
-                ))
+        # Temporarily enable PR management for orchestrated merges
+        original_manage_prs = self.manage_prs
+        self.manage_prs = True
+        
+        try:
+            for pr_number in pr_numbers[:batch_size]:
+                try:
+                    pr = repo.get_pull(pr_number)
+                    # Use existing state machine to handle the merge
+                    pr_results = await self._process_pr_state_machine(pr)
+                    results.extend(pr_results)
+                except Exception as e:
+                    self.logger.error(f"Failed to merge PR #{pr_number}: {e}")
+                    results.append(PRRunResult(
+                        repo=repo_name,
+                        pr_number=pr_number,
+                        title=f"PR #{pr_number}",
+                        status='error',
+                        details=str(e),
+                        action='merge_failed'
+                    ))
+        finally:
+            # Restore original setting
+            self.manage_prs = original_manage_prs
+            
         return results
     
     async def _execute_flag_blocked_workflow(self, repo_name: str, pr_numbers: List[int]) -> List[Dict[str, Any]]:
