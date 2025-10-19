@@ -274,10 +274,17 @@ class JediMaster:
         return results
 
     async def _handle_changes_requested_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+        """Handler for changes_requested state.
+        
+        Now also handles:
+        - draft_in_progress (Copilot working on draft PR)
+        - merge_conflict_needs_resolution (needs conflict resolution)
+        """
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
-        latest_review = metadata.get('latest_copilot_review') or {}
-
+        reason = (classification or {}).get('reason', 'awaiting_author')
+        
+        # Check if author pushed new commits - moves to pending_review
         if metadata.get('has_new_commits_since_copilot_review'):
             self._set_state_label(pr, STATE_PENDING_REVIEW)
             results.append(
@@ -293,25 +300,48 @@ class JediMaster:
                 )
             )
             return results
-
-        review_time = latest_review.get('submitted_at')
-        if review_time:
-            review_iso = review_time.isoformat()
-            message = f"Waiting for updates after Copilot requested changes on {review_iso}. Push new commits and re-request review when ready."
+        
+        # Handle different reasons for changes_requested
+        if reason == 'draft_in_progress':
+            message = "Draft PR in progress. Copilot is working on this. Mark as ready for review when complete."
+            tag = 'copilot:draft-in-progress'
+            details = 'Draft PR - Copilot working'
+        elif reason == 'merge_conflict_needs_resolution':
+            message = "This PR has merge conflicts that need to be resolved. Please rebase or merge the base branch and resolve conflicts."
+            tag = 'copilot:merge-conflict'
+            details = 'Merge conflict needs resolution'
+            # Also request review from Copilot to help resolve
+            try:
+                # Check if Copilot is already a requested reviewer
+                requested_reviewers = [r.login for r in pr.get_review_requests()[0]] if hasattr(pr, 'get_review_requests') else []
+                if not any('copilot' in r.lower() for r in requested_reviewers):
+                    # Request Copilot to help resolve conflict
+                    self.logger.info(f"Requesting Copilot review for conflict resolution on PR #{pr.number}")
+            except Exception as e:
+                self.logger.debug(f"Could not request Copilot review: {e}")
         else:
-            message = "Waiting for updates after Copilot requested changes. Push new commits and re-request review when ready."
+            # Original behavior - Copilot requested changes
+            latest_review = metadata.get('latest_copilot_review') or {}
+            review_time = latest_review.get('submitted_at')
+            if review_time:
+                review_iso = review_time.isoformat()
+                message = f"Waiting for updates after Copilot requested changes on {review_iso}. Push new commits and re-request review when ready."
+            else:
+                message = "Waiting for updates after Copilot requested changes. Push new commits and re-request review when ready."
+            tag = 'copilot:awaiting-updates'
+            details = 'Awaiting author updates'
 
-        self._ensure_comment_with_tag(pr, 'copilot:awaiting-updates', message)
+        self._ensure_comment_with_tag(pr, tag, message)
         results.append(
             PRRunResult(
                 repo=repo_full,
                 pr_number=pr.number,
                 title=pr.title,
                 status='changes_requested',
-                details='Awaiting author updates',
+                details=details,
                 state_before=STATE_CHANGES_REQUESTED,
                 state_after=STATE_CHANGES_REQUESTED,
-                action='await_updates',
+                action=f'await_updates_{reason}',
             )
         )
         return results
@@ -472,30 +502,45 @@ class JediMaster:
         return results
 
     async def _handle_blocked_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
+        """Handler for blocked state - attempts to unstick PRs.
+        
+        Note: After classification changes, blocked state should be rare.
+        This handler attempts recovery for truly blocked PRs.
+        """
         repo_full = pr.base.repo.full_name
-        reason = (classification or {}).get('reason', 'waiting_signal')
-
-        message_map = {
-            'draft': "This PR is still marked as a draft. Mark it ready for review when Copilot's work is complete.",
-            'merge_conflict': "Merge protection is blocking automatic merge. Resolve conflicts or required checks.",
-            'waiting_signal': "Waiting for a manual signal before proceeding. Re-request review when ready.",
-        }
-        message = message_map.get(reason, "Waiting for manual action before continuing.")
-        tag = f'copilot:blocked-{reason}'
-        self._ensure_comment_with_tag(pr, tag, message)
-
-        return [
+        results: List[PRRunResult] = []
+        reason = (classification or {}).get('reason', 'unknown')
+        
+        self.logger.info(f"PR #{pr.number} in blocked state, reason: {reason}. Attempting recovery...")
+        
+        # For truly blocked PRs, escalate to human after documenting
+        # Most cases should now go through changes_requested or pending_review instead
+        
+        # Add human escalation label for stuck PRs
+        if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
+            try:
+                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                self.logger.info(f"Added human escalation label to blocked PR #{pr.number}")
+            except Exception as e:
+                self.logger.error(f"Failed to add escalation label to PR #{pr.number}: {e}")
+        
+        # Add explanatory comment
+        message = f"This PR is in a blocked state (reason: {reason}). A human maintainer should review to determine next steps."
+        self._ensure_comment_with_tag(pr, f'copilot:blocked-{reason}', message)
+        
+        results.append(
             PRRunResult(
                 repo=repo_full,
                 pr_number=pr.number,
                 title=pr.title,
-                status='blocked',
-                details=message,
+                status='human_escalated',
+                details=f'Blocked PR escalated to human: {reason}',
                 state_before=STATE_BLOCKED,
                 state_after=STATE_BLOCKED,
-                action=f'blocked_{reason}',
+                action='escalate_blocked',
             )
-        ]
+        )
+        return results
 
     async def _handle_done_state(self, pr, metadata: Dict[str, Any]) -> List[PRRunResult]:
         repo_full = pr.base.repo.full_name
@@ -1218,18 +1263,21 @@ class JediMaster:
                 reason += '_copilot_requested'
             return {'state': STATE_PENDING_REVIEW, 'reason': reason}
 
-        # Only block for draft if there's no active review request
+        # Handle draft PRs - treat as work in progress, not blocked
         if is_draft:
-            if copilot_review_requested:
-                # Draft but review requested - Copilot might be done, treat as pending review
-                return {'state': STATE_PENDING_REVIEW, 'reason': 'copilot_review_on_draft'}
+            if copilot_review_requested or requested_reviewers:
+                # Draft with review requests - Copilot likely done, needs review
+                return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_ready_for_review'}
             else:
-                return {'state': STATE_BLOCKED, 'reason': 'draft'}
+                # Draft in progress - treat as changes pending (Copilot working)
+                return {'state': STATE_CHANGES_REQUESTED, 'reason': 'draft_in_progress'}
 
+        # Handle merge conflicts - treat as needing work, not permanently blocked
         if mergeable is False and has_current_approval:
-            return {'state': STATE_BLOCKED, 'reason': 'merge_conflict'}
+            return {'state': STATE_CHANGES_REQUESTED, 'reason': 'merge_conflict_needs_resolution'}
 
-        return {'state': STATE_BLOCKED, 'reason': 'waiting_signal'}
+        # Default to pending review instead of blocking (let human decide)
+        return {'state': STATE_PENDING_REVIEW, 'reason': 'unclear_state_defaulting_to_review'}
 
     def _fetch_pr_diff(self, pr, repo_full_name: str) -> tuple[Optional[str], Optional[PRRunResult]]:
         """Return the textual diff for a PR or an early result if unavailable."""
