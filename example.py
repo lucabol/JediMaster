@@ -226,6 +226,12 @@ async def main():
 
     args = parser.parse_args()
 
+    # Validate --loop requires --orchestrate
+    if getattr(args, 'loop', None) is not None and not args.orchestrate:
+        print("Error: --loop can only be used with --orchestrate")
+        print("Usage: python example.py <repo> --orchestrate --loop [MINUTES]")
+        return
+
     # Determine similarity mode and threshold
     # If --similarity-threshold was used without a value, args.similarity_threshold will be 0.9 (const)
     # If --similarity-threshold was used with a value, args.similarity_threshold will be that value

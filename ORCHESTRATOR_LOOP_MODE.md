@@ -6,6 +6,8 @@ Added continuous orchestration capability to run the orchestrator in a loop, che
 
 ## Usage
 
+**Important**: `--loop` requires `--orchestrate` to be specified.
+
 ```bash
 # Run orchestrator in a loop with default 30-minute interval
 python example.py <repo> --orchestrate --loop
@@ -148,6 +150,7 @@ python example.py org/repo --orchestrate --loop 120 --enable-issue-creation
 - **Ctrl+C (KeyboardInterrupt)**: Gracefully stops loop and shows iteration count
 - **Repository errors**: Logged but don't stop the loop (continues to next iteration)
 - **Invalid interval**: Exits with error message if `N < 1`
+- **Missing --orchestrate**: Exits with error if `--loop` used without `--orchestrate`
 
 ### Iteration Tracking
 - Counter starts at 1
@@ -218,6 +221,7 @@ python example.py myorg/dev-repo --orchestrate --loop 5
 
 ## Limitations
 
+⚠️ **Requires --orchestrate**: `--loop` only works with `--orchestrate` flag
 ⚠️ **Long-running process**: May need process management (systemd, Docker)
 ⚠️ **Single instance**: Don't run multiple loops on same repo (conflicts)
 ⚠️ **Memory**: Long-running processes may accumulate memory (restart periodically)
@@ -268,6 +272,12 @@ python example.py lucabol/Hello-World --orchestrate --loop 1
 # - Sleep message with next run time
 # - Runs again after 1 minute
 # - Ctrl+C to stop
+
+# Error: --loop without --orchestrate
+python example.py lucabol/Hello-World --loop
+# Output:
+# Error: --loop can only be used with --orchestrate
+# Usage: python example.py <repo> --orchestrate --loop [MINUTES]
 ```
 
 ## Summary
