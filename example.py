@@ -208,7 +208,7 @@ async def main():
     parser.add_argument('--enable-issue-creation', action='store_true',
                        help='Allow orchestrator to create new issues (only used with --orchestrate)')
     parser.add_argument('--loop', type=int, nargs='?', const=30, metavar='MINUTES',
-                       help='Run orchestrator in a loop, checking every N minutes (default: 30). Only works with --orchestrate.')
+                       help='Run orchestrator continuously, checking every N minutes (default: 30). Requires --orchestrate flag. Designed for autonomous continuous operation.')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--create-issues-count', type=int, default=3,
@@ -226,10 +226,19 @@ async def main():
 
     args = parser.parse_args()
 
-    # Validate --loop requires --orchestrate
+    # Validate --loop requires --orchestrate (orchestration is designed for continuous operation)
     if getattr(args, 'loop', None) is not None and not args.orchestrate:
-        print("Error: --loop can only be used with --orchestrate")
+        print("Error: --loop requires --orchestrate flag")
+        print("")
+        print("Reason: Loop mode is designed for continuous autonomous orchestration.")
+        print("For one-time operations, run the command without --loop.")
+        print("")
         print("Usage: python example.py <repo> --orchestrate --loop [MINUTES]")
+        print("")
+        print("Examples:")
+        print("  python example.py myrepo --orchestrate --loop        # Loop every 30 min")
+        print("  python example.py myrepo --orchestrate --loop 15     # Loop every 15 min")
+        print("  python example.py myrepo --orchestrate               # Run once (no loop)")
         return
 
     # Determine similarity mode and threshold

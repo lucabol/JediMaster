@@ -4,6 +4,8 @@
 
 Added continuous orchestration capability to run the orchestrator in a loop, checking repositories at regular intervals.
 
+**Design Note**: Loop mode is specifically designed for orchestration (`--orchestrate` flag required) because orchestration is the autonomous, strategic mode meant for continuous operation. Other modes (issue processing, PR management) are typically run ad-hoc when needed, not continuously.
+
 ## Usage
 
 **Important**: `--loop` requires `--orchestrate` to be specified.
@@ -26,6 +28,29 @@ python example.py <repo> --orchestrate --loop 30 --enable-issue-creation
 ```
 
 ## Behavior
+
+### Why Only Orchestration?
+
+Loop mode is **specifically designed for orchestration** because:
+
+**Orchestration is autonomous and strategic**:
+- LLM decides what workflows to run based on repository state
+- Adapts to changing conditions (PR backlog, Copilot capacity, rate limits)
+- Makes intelligent decisions about resource allocation
+- Designed for "set it and forget it" continuous operation
+
+**Other modes are more manual/tactical**:
+- `--manage-prs`: Process specific PRs (typically run when PRs exist)
+- Normal mode: Process issues (typically run when issues are created)
+- `--auto-merge-reviewed`: Merge specific PRs (targeted operation)
+- These are typically triggered by events, not run continuously
+
+**Continuous operation requires intelligence**:
+- Running issue processing in a loop would blindly reassign issues every N minutes
+- Running PR management in a loop could conflict with Copilot's work
+- Orchestration has the intelligence to skip unnecessary work and avoid conflicts
+
+If you need continuous operation for other modes, you can use cron jobs or systemd timers for more control.
 
 ### Default Interval
 - If `--loop` is specified without a value: **30 minutes**
@@ -221,11 +246,41 @@ python example.py myorg/dev-repo --orchestrate --loop 5
 
 ## Limitations
 
-⚠️ **Requires --orchestrate**: `--loop` only works with `--orchestrate` flag
+⚠️ **Requires --orchestrate**: `--loop` only works with `--orchestrate` flag (by design - see "Why Only Orchestration?" section)
 ⚠️ **Long-running process**: May need process management (systemd, Docker)
 ⚠️ **Single instance**: Don't run multiple loops on same repo (conflicts)
 ⚠️ **Memory**: Long-running processes may accumulate memory (restart periodically)
 ⚠️ **Rate limits**: Very short intervals may hit GitHub API rate limits
+
+### Alternative: Looping Other Modes
+
+If you need to run other modes continuously, use cron or systemd timers:
+
+**Cron example** (process issues every 30 minutes):
+```bash
+# Add to crontab (crontab -e)
+*/30 * * * * cd /path/to/JediMaster && python example.py myrepo >> /var/log/jedimaster.log 2>&1
+```
+
+**Systemd timer example** (process PRs hourly):
+```ini
+# /etc/systemd/system/jedimaster.timer
+[Unit]
+Description=JediMaster PR Processing Timer
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+**Why use cron/systemd instead of --loop?**
+- Better process management (restart on failure, logging, monitoring)
+- More flexible scheduling (different intervals for different modes)
+- System integration (notifications, alerts, dependencies)
+- Resource isolation (each run is fresh, no memory accumulation)
 
 ## Best Practices
 
@@ -276,8 +331,17 @@ python example.py lucabol/Hello-World --orchestrate --loop 1
 # Error: --loop without --orchestrate
 python example.py lucabol/Hello-World --loop
 # Output:
-# Error: --loop can only be used with --orchestrate
+# Error: --loop requires --orchestrate flag
+# 
+# Reason: Loop mode is designed for continuous autonomous orchestration.
+# For one-time operations, run the command without --loop.
+# 
 # Usage: python example.py <repo> --orchestrate --loop [MINUTES]
+# 
+# Examples:
+#   python example.py myrepo --orchestrate --loop        # Loop every 30 min
+#   python example.py myrepo --orchestrate --loop 15     # Loop every 15 min
+#   python example.py myrepo --orchestrate               # Run once (no loop)
 ```
 
 ## Summary
