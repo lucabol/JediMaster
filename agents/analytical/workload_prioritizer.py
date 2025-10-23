@@ -41,11 +41,15 @@ class WorkloadPrioritizer:
                     pending_review_prs.append(pr.number)
                 elif state == 'changes_requested':
                     changes_requested_prs.append(pr.number)
+                elif state == 'blocked':
+                    # Blocked PRs should be re-evaluated in case they can be unblocked
+                    # (e.g., conflicts were resolved, merge can be retried)
+                    pending_review_prs.append(pr.number)
                 elif state == 'unknown':
                     # PRs without state labels need to be classified
                     # Add them to pending_review to be processed by state machine
                     pending_review_prs.append(pr.number)
-                # Note: 'blocked' and 'done' states are intentionally not processed
+                # Note: 'done' state is intentionally not processed
         except Exception as e:
             self.logger.error(f"Failed to analyze PRs: {e}")
         

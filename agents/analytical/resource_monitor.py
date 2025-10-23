@@ -52,29 +52,28 @@ class ResourceMonitor:
         try:
             repo = self.github.get_repo(repo_name)
             
-            # Count Copilot's active work
-            copilot_issues = 0
+            # Count PRs where Copilot is actively working (determines capacity)
+            # A PR is considered "active" if:
+            # 1. Copilot is the author (PR was created for an issue)
+            # 2. A review comment was recently added (Copilot is addressing feedback)
+            # 3. A merge conflict comment was added (Copilot is fixing conflicts)
             copilot_prs = 0
             
-            for issue in repo.get_issues(state='open'):
-                if issue.pull_request:
-                    continue
-                # Check if assigned to Copilot
-                if any('copilot' in (a.login or '').lower() for a in issue.assignees):
-                    copilot_issues += 1
-            
-            # Count PRs (approximation of Copilot PRs)
             for pr in repo.get_pulls(state='open'):
                 author = pr.user.login if pr.user else ''
                 if 'copilot' in author.lower():
-                    copilot_prs += 1
+                    # Check if Copilot is still working on this PR
+                    if self._is_copilot_actively_working(pr):
+                        copilot_prs += 1
             
-            available_slots = max(0, self.copilot_max_concurrent - copilot_issues)
+            # Capacity is based on active PRs only
+            # Assigning issues to Copilot just creates PRs which then consume capacity
+            available_slots = max(0, self.copilot_max_concurrent - copilot_prs)
             
-            # Add capacity warnings
-            if copilot_issues >= self.copilot_max_concurrent:
+            # Add capacity warnings based on PRs
+            if copilot_prs >= self.copilot_max_concurrent:
                 warnings.append(
-                    f"Copilot at capacity: {copilot_issues}/{self.copilot_max_concurrent} issues"
+                    f"Copilot at capacity: {copilot_prs}/{self.copilot_max_concurrent} active PRs"
                 )
             
             if copilot_prs > 5:
@@ -84,7 +83,6 @@ class ResourceMonitor:
             
         except Exception as e:
             self.logger.error(f"Failed to check Copilot capacity: {e}")
-            copilot_issues = 0
             copilot_prs = 0
             available_slots = self.copilot_max_concurrent
             warnings.append(f"Failed to check Copilot capacity: {e}")
@@ -96,9 +94,63 @@ class ResourceMonitor:
             github_api_reset_at=reset_time,
             estimated_api_budget=estimated_items,
             # Copilot capacity
-            copilot_assigned_issues=copilot_issues,
             copilot_max_concurrent=self.copilot_max_concurrent,
             copilot_available_slots=available_slots,
             copilot_active_prs=copilot_prs,
             warnings=warnings
         )
+    
+    def _is_copilot_actively_working(self, pr) -> bool:
+        """Check if Copilot is actively working on a PR.
+        
+        Copilot is considered actively working if:
+        1. The PR is in draft state (Copilot hasn't requested review yet)
+        2. There was a recent comment mentioning @copilot (review feedback or merge conflict)
+        3. The most recent comment is from Copilot (responding to feedback)
+        
+        Returns:
+            bool: True if Copilot is actively working, False otherwise
+        """
+        try:
+            # If PR is draft, Copilot is still working on it
+            if pr.draft:
+                return True
+            
+            # Check recent comments to see if Copilot is being asked to work or responding
+            comments = list(pr.get_issue_comments())
+            if not comments:
+                # No comments yet, if it's draft=False and ready for review, not actively working
+                return False
+            
+            # Get the most recent comment
+            last_comment = comments[-1]
+            last_comment_author = last_comment.user.login if last_comment.user else ''
+            last_comment_body = last_comment.body or ''
+            
+            # Check if last comment is from Copilot (responding to feedback)
+            if 'copilot' in last_comment_author.lower():
+                return True
+            
+            # Check if last comment mentions @copilot (asking for work)
+            if '@copilot' in last_comment_body.lower():
+                return True
+            
+            # Check if there's a recent review comment (last few comments)
+            # Look at last 3 comments to see if there's ongoing review discussion
+            recent_comments = comments[-3:]
+            for comment in recent_comments:
+                body = comment.body or ''
+                # Check for review-related markers
+                if '@copilot' in body.lower():
+                    return True
+                # Check if it's a review comment from our system
+                if '[copilot:' in body.lower() or 'review feedback' in body.lower():
+                    return True
+            
+            # If none of the above, Copilot is not actively working
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to check if Copilot is working on PR #{pr.number}: {e}")
+            # Default to True (assume working) to be conservative with capacity
+            return True

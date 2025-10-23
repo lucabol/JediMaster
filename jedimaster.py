@@ -278,14 +278,13 @@ class JediMaster:
         
         Now also handles:
         - draft_in_progress (Copilot working on draft PR)
-        - merge_conflict_needs_resolution (needs conflict resolution)
         """
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
         reason = (classification or {}).get('reason', 'awaiting_author')
         
-        # Check if author pushed new commits - moves to pending_review
-        if metadata.get('has_new_commits_since_copilot_review'):
+        # Check if author pushed new commits since any reviewer requested changes - moves to pending_review
+        if metadata.get('has_new_commits_since_any_review'):
             self._set_state_label(pr, STATE_PENDING_REVIEW)
             results.append(
                 PRRunResult(
@@ -293,7 +292,7 @@ class JediMaster:
                     pr_number=pr.number,
                     title=pr.title,
                     status='state_transition',
-                    details='New commits detected; returning to review queue',
+                    details='New commits detected after changes requested; returning to review queue',
                     state_before=STATE_CHANGES_REQUESTED,
                     state_after=STATE_PENDING_REVIEW,
                     action='requeue_review',
@@ -306,28 +305,23 @@ class JediMaster:
             message = "Draft PR in progress. Copilot is working on this. Mark as ready for review when complete."
             tag = 'copilot:draft-in-progress'
             details = 'Draft PR - Copilot working'
-        elif reason == 'merge_conflict_needs_resolution':
-            message = "This PR has merge conflicts that need to be resolved. Please rebase or merge the base branch and resolve conflicts."
-            tag = 'copilot:merge-conflict'
-            details = 'Merge conflict needs resolution'
-            # Also request review from Copilot to help resolve
-            try:
-                # Check if Copilot is already a requested reviewer
-                requested_reviewers = [r.login for r in pr.get_review_requests()[0]] if hasattr(pr, 'get_review_requests') else []
-                if not any('copilot' in r.lower() for r in requested_reviewers):
-                    # Request Copilot to help resolve conflict
-                    self.logger.info(f"Requesting Copilot review for conflict resolution on PR #{pr.number}")
-            except Exception as e:
-                self.logger.debug(f"Could not request Copilot review: {e}")
         else:
-            # Original behavior - Copilot requested changes
-            latest_review = metadata.get('latest_copilot_review') or {}
-            review_time = latest_review.get('submitted_at')
-            if review_time:
-                review_iso = review_time.isoformat()
-                message = f"Waiting for updates after Copilot requested changes on {review_iso}. Push new commits and re-request review when ready."
+            # Changes requested by any reviewer (Copilot or human)
+            # Find who requested changes
+            latest_change_requester = None
+            latest_change_time = None
+            for reviewer in metadata.get('latest_reviews', {}).values():
+                if reviewer['state'] == 'CHANGES_REQUESTED':
+                    review_time = reviewer.get('submitted_at')
+                    if latest_change_time is None or (review_time and review_time > latest_change_time):
+                        latest_change_requester = reviewer['login']
+                        latest_change_time = review_time
+            
+            if latest_change_time:
+                review_iso = latest_change_time.isoformat()
+                message = f"Waiting for updates after {latest_change_requester} requested changes on {review_iso}. Push new commits when ready."
             else:
-                message = "Waiting for updates after Copilot requested changes. Push new commits and re-request review when ready."
+                message = "Waiting for updates after reviewer requested changes. Push new commits when ready."
             tag = 'copilot:awaiting-updates'
             details = 'Awaiting author updates'
 
@@ -565,6 +559,7 @@ class JediMaster:
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
 
+        # Skip PRs that have been escalated to humans
         if self._has_label(pr, HUMAN_ESCALATION_LABEL):
             results.append(
                 PRRunResult(
@@ -578,16 +573,40 @@ class JediMaster:
             )
             return results
 
-        should_escalate, comment_count = self._should_escalate_for_human(pr)
+        # Skip PRs assigned to humans (non-Copilot assignees) ONLY if Copilot is NOT assigned
+        try:
+            assignees = list(pr.assignees) if hasattr(pr, 'assignees') else []
+            has_copilot_assignee = any('copilot' in getattr(a, 'login', '').lower() for a in assignees)
+            has_human_assignee = any('copilot' not in getattr(a, 'login', '').lower() for a in assignees)
+            
+            # Only skip if there's a human assignee but NO Copilot assignee
+            if has_human_assignee and not has_copilot_assignee:
+                human_assignees = [getattr(a, 'login', 'unknown') for a in assignees if 'copilot' not in getattr(a, 'login', '').lower()]
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='human_assigned',
+                        details=f'Assigned to human reviewer(s): {", ".join(human_assignees)} (no Copilot assignment)',
+                        action='skip_human_assigned',
+                    )
+                )
+                return results
+        except Exception as exc:
+            self.logger.debug(f"Failed to check assignees for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        should_escalate, merge_conflict_count, regular_count = self._should_escalate_for_human(pr)
         if should_escalate:
-            self._escalate_pr_to_human(pr, comment_count)
+            self._escalate_pr_to_human(pr, merge_conflict_count, regular_count)
+            total_count = merge_conflict_count + regular_count
             results.append(
                 PRRunResult(
                     repo=repo_full,
                     pr_number=pr.number,
                     title=pr.title,
                     status='human_escalated',
-                    details=f'Escalated to human reviewer after {comment_count} comments.',
+                    details=f'Escalated: {merge_conflict_count} merge conflict + {regular_count} regular = {total_count} comments.',
                     action='apply_human_escalation',
                 )
             )
@@ -995,13 +1014,18 @@ class JediMaster:
             self.logger.debug(f"Failed to inspect labels for PR #{getattr(pr, 'number', '?')}: {exc}")
         return False
 
-    def _collect_back_and_forth_stats(self, pr) -> Tuple[int, set[str]]:
-        events: List[Tuple[Optional[datetime], str]] = []
+    def _collect_back_and_forth_stats(self, pr) -> Tuple[int, int, set[str]]:
+        """Collect comment statistics, distinguishing merge conflict from regular comments.
+        
+        Returns:
+            Tuple of (merge_conflict_count, regular_count, participants)
+        """
+        events: List[Tuple[Optional[datetime], str, str]] = []
 
         def _append_event(created_at, login, body) -> None:
             if not body or not body.strip():
                 return
-            events.append((created_at, login or ''))
+            events.append((created_at, login or '', body or ''))
 
         try:
             for comment in pr.get_issue_comments():
@@ -1025,27 +1049,62 @@ class JediMaster:
         events = [event for event in events if event[0] is not None]
         events.sort(key=lambda item: item[0])
 
-        count = 0
+        merge_conflict_count = 0
+        regular_count = 0
         participants: set[str] = set()
-        for _, login in events:
+        
+        for _, login, body in events:
             normalized = (login or '').lower()
             participant = 'copilot' if 'copilot' in normalized else 'human'
             participants.add(participant)
-            count += 1
+            
+            # Check if this is a merge conflict comment
+            body_lower = body.lower()
+            if 'merge conflict' in body_lower or 'resolve conflict' in body_lower:
+                merge_conflict_count += 1
+            else:
+                regular_count += 1
 
-        return count, participants
+        return merge_conflict_count, regular_count, participants
 
-    def _should_escalate_for_human(self, pr) -> Tuple[bool, int]:
-        count, participants = self._collect_back_and_forth_stats(pr)
-        if count > 9 and {'copilot', 'human'}.issubset(participants):
-            return True, count
-        return False, count
+    def _should_escalate_for_human(self, pr) -> Tuple[bool, int, int]:
+        """Check if PR should be escalated to human based on comment counts.
+        
+        Returns:
+            Tuple of (should_escalate, merge_conflict_count, regular_count)
+        """
+        merge_conflict_count, regular_count, participants = self._collect_back_and_forth_stats(pr)
+        
+        # Only escalate if both copilot and humans have participated
+        if not {'copilot', 'human'}.issubset(participants):
+            return False, merge_conflict_count, regular_count
+        
+        # Escalate if >10 merge conflict comments OR >20 non-merge-conflict comments
+        should_escalate = merge_conflict_count > 10 or regular_count > 20
+        
+        return should_escalate, merge_conflict_count, regular_count
 
-    def _escalate_pr_to_human(self, pr, comment_count: int) -> None:
+    def _escalate_pr_to_human(self, pr, merge_conflict_count: int, regular_count: int) -> None:
+        """Escalate PR to human reviewer and assign a human.
+        
+        Args:
+            pr: The pull request to escalate
+            merge_conflict_count: Number of merge conflict related comments
+            regular_count: Number of regular comments
+        """
+        total_count = merge_conflict_count + regular_count
+        
+        # Determine escalation reason
+        if merge_conflict_count > 10:
+            reason = f"excessive merge conflict discussions ({merge_conflict_count} merge conflict comments)"
+        else:
+            reason = f"extensive back-and-forth discussions ({total_count} total comments)"
+        
         message = (
-            "This PR has had more than nine back-and-forth comments between Copilot and contributors. "
+            f"This PR has had {reason} between Copilot and contributors. "
             "Escalating to a human reviewer for follow-up."
         )
+        
         try:
             repo = pr.base.repo
             self._ensure_label_exists(
@@ -1063,11 +1122,23 @@ class JediMaster:
             except Exception as exc:
                 self.logger.error(f"Failed to apply human escalation label to PR #{getattr(pr, 'number', '?')}: {exc}")
 
-        # Include comment count to give maintainers quick context.
+        # Assign to a human reviewer (get first assignee or author)
+        try:
+            assignees = list(pr.assignees) if hasattr(pr, 'assignees') else []
+            if not assignees:
+                # Assign to PR author if no assignees
+                author_login = getattr(getattr(pr, 'user', None), 'login', None)
+                if author_login:
+                    pr.add_to_assignees(author_login)
+                    self.logger.info(f"Assigned PR #{pr.number} to author {author_login} for human review")
+        except Exception as exc:
+            self.logger.error(f"Failed to assign human to PR #{getattr(pr, 'number', '?')}: {exc}")
+
+        # Include comment counts to give maintainers quick context
         self._ensure_comment_with_tag(
             pr,
             'copilot:human-escalation',
-            f"{message}\nDetected comment exchanges: {comment_count}.",
+            f"{message}\nMerge conflict comments: {merge_conflict_count}, Regular comments: {regular_count}, Total: {total_count}.",
         )
 
     def _collect_pr_metadata(self, pr) -> Dict[str, Any]:
@@ -1093,6 +1164,7 @@ class JediMaster:
         metadata['is_draft'] = getattr(pr, 'draft', False)
         metadata['author'] = getattr(getattr(pr, 'user', None), 'login', None)
         metadata['mergeable'] = getattr(pr, 'mergeable', None)
+        metadata['mergeable_state'] = getattr(pr, 'mergeable_state', None)
         metadata['head_sha'] = getattr(getattr(pr, 'head', None), 'sha', None)
 
         labels = []
@@ -1210,6 +1282,20 @@ class JediMaster:
             and latest_copilot_review.get('state') == 'CHANGES_REQUESTED'
             and not has_new_commits_since_copilot_review
         )
+        
+        # Check if ANY reviewer requested changes (not just Copilot)
+        any_changes_requested = False
+        has_new_commits_since_any_review = False
+        for reviewer in latest_reviews.values():
+            if reviewer['state'] == 'CHANGES_REQUESTED':
+                # Check if there are new commits since this review
+                review_time = reviewer.get('submitted_at')
+                if review_time and last_commit_time and last_commit_time > review_time:
+                    has_new_commits_since_any_review = True
+                    continue  # New commits since this review, so changes addressed
+                any_changes_requested = True
+        metadata['any_changes_requested_pending'] = any_changes_requested
+        metadata['has_new_commits_since_any_review'] = has_new_commits_since_any_review
 
         return metadata
 
@@ -1221,6 +1307,7 @@ class JediMaster:
         has_current_approval = metadata.get('has_current_approval', False)
         has_new_commits = metadata.get('has_new_commits_since_copilot_review', False)
         copilot_changes_pending = metadata.get('copilot_changes_requested_pending', False)
+        any_changes_pending = metadata.get('any_changes_requested_pending', False)
         copilot_review_requested = metadata.get('copilot_review_requested', False)
         review_decision = metadata.get('review_decision')
         last_commit_time = metadata.get('last_commit_time')
@@ -1228,8 +1315,19 @@ class JediMaster:
         if metadata.get('merged') or metadata.get('state') == 'closed':
             return {'state': STATE_DONE, 'reason': 'pr_closed'}
 
-        if copilot_changes_pending:
-            return {'state': STATE_CHANGES_REQUESTED, 'reason': 'awaiting_author'}
+        # If any reviewer (Copilot or human) requested changes, check if addressed
+        if any_changes_pending:
+            # If there are new commits since the review, treat as addressed
+            has_new_commits_since_review = metadata.get('has_new_commits_since_any_review', False)
+            if has_new_commits_since_review:
+                # Changes were addressed with new commits, continue processing
+                self.logger.info(f"PR #{pr.number}: Changes requested but new commits detected, continuing processing")
+            else:
+                # If it's a draft with merge conflicts, allow Copilot to fix them
+                if is_draft and mergeable is False:
+                    self.logger.info(f"PR #{pr.number}: Draft with merge conflicts, allowing Copilot to fix")
+                    return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_needs_conflict_resolution'}
+                return {'state': STATE_CHANGES_REQUESTED, 'reason': 'awaiting_author'}
 
         if (
             has_current_approval
@@ -1289,12 +1387,20 @@ class JediMaster:
                 # Draft with review requests - Copilot likely done, needs review
                 return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_ready_for_review'}
             else:
-                # Draft in progress - treat as changes pending (Copilot working)
+                # Draft in progress - Copilot should be working on it
+                # BUT if it's been sitting as a draft with changes_requested label for a while,
+                # it should move to pending_review for human intervention
+                import datetime
+                labels = metadata.get('labels', [])
+                if 'copilot-state:changes_requested' in labels:
+                    # Check if it's been sitting for a while (>1 hour for testing, should be 6 hours)
+                    if last_commit_time:
+                        time_since_commit = datetime.datetime.now(datetime.timezone.utc) - last_commit_time
+                        if time_since_commit.total_seconds() > 3600:  # 1 hour (temporary for testing)
+                            # Draft sitting too long - escalate for review
+                            return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_stale_needs_review'}
+                # Still in progress
                 return {'state': STATE_CHANGES_REQUESTED, 'reason': 'draft_in_progress'}
-
-        # Handle merge conflicts - treat as needing work, not permanently blocked
-        if mergeable is False and has_current_approval:
-            return {'state': STATE_CHANGES_REQUESTED, 'reason': 'merge_conflict_needs_resolution'}
 
         # Default to pending review instead of blocking (let human decide)
         return {'state': STATE_PENDING_REVIEW, 'reason': 'unclear_state_defaulting_to_review'}
@@ -1537,16 +1643,6 @@ class JediMaster:
     async def process_issue(self, issue, repo_name: str) -> IssueResult:
         """Process a single issue and return an IssueResult."""
         try:
-            # Skip if already assigned to Copilot
-            if any('copilot' in (assignee.login or '').lower() for assignee in issue.assignees):
-                return IssueResult(
-                    repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    url=issue.html_url,
-                    status='already_assigned',
-                    reasoning="Already assigned to Copilot."
-                )
             # Evaluate with DeciderAgent
             result = await self.decider.evaluate_issue({'title': issue.title, 'body': issue.body or ''})
             
@@ -2043,6 +2139,7 @@ class JediMaster:
             
             self.logger.info("[Orchestrator] Step 3/4: Prioritizing workload...")
             workload = orchestrator.workload_prioritizer.prioritize(repo_name, initial_state)
+            self.logger.info(f"[Orchestrator] Workload result: pending_review_prs={workload.pending_review_prs}, changes_requested_prs={workload.changes_requested_prs}")
             
             # Step 2: Create execution plan (ONE LLM call)
             self.logger.info("[Orchestrator] Step 4/4: Creating execution plan...")
@@ -2130,6 +2227,7 @@ class JediMaster:
             elif workflow.name == 'review_prs':
                 # Review PRs (uses PRDeciderAgent LLM)
                 pr_numbers = workload.pending_review_prs[:workflow.batch_size]
+                self.logger.info(f"Executing review_prs workflow with PR numbers: {pr_numbers} from workload.pending_review_prs={workload.pending_review_prs}")
                 results = await self._execute_review_workflow(repo_name, pr_numbers)
                 return WorkflowResult(
                     workflow_name=workflow.name,
@@ -2267,9 +2365,12 @@ class JediMaster:
         results = []
         repo = self.github.get_repo(repo_name)
         
+        self.logger.info(f"Review workflow received PR numbers: {pr_numbers}")
+        
         for pr_number in pr_numbers:
             try:
                 pr = repo.get_pull(pr_number)
+                self.logger.info(f"Reviewing PR #{pr_number}: draft={pr.draft}, state={pr.state}")
                 # Use existing state machine to handle the review
                 pr_results = await self._process_pr_state_machine(pr)
                 results.extend(pr_results)
@@ -2417,7 +2518,6 @@ class JediMaster:
         print("\nINITIAL STATE:")
         print(f"  Issues: {report.initial_state.open_issues_total} open")
         print(f"    - Unprocessed: {report.initial_state.open_issues_unprocessed}")
-        print(f"    - Assigned to Copilot: {report.initial_state.open_issues_assigned_to_copilot}")
         print(f"  PRs: {report.initial_state.open_prs_total} open")
         print(f"    - Ready to merge: {report.initial_state.prs_ready_to_merge} (quick wins!)")
         print(f"    - Pending review: {report.initial_state.prs_pending_review}")
@@ -2427,7 +2527,7 @@ class JediMaster:
         # Resources
         print("\nRESOURCES:")
         print(f"  GitHub API: {report.initial_resources.github_api_remaining}/{report.initial_resources.github_api_limit} calls")
-        print(f"  Copilot: {report.initial_resources.copilot_assigned_issues}/{report.initial_resources.copilot_max_concurrent} issues ({report.initial_resources.copilot_available_slots} slots available)")
+        print(f"  Copilot Capacity: {report.initial_resources.copilot_active_prs}/{report.initial_resources.copilot_max_concurrent} active PRs ({report.initial_resources.copilot_available_slots} slots available)")
         if report.initial_resources.warnings:
             print("  Warnings:")
             for warning in report.initial_resources.warnings:
@@ -2452,17 +2552,26 @@ class JediMaster:
         # Results
         print("\nRESULTS:")
         for result in report.workflow_results:
-            status = "✓" if result.success else "✗"
-            print(f"  {status} {result.workflow_name}:")
-            print(f"     Processed: {result.items_processed}, Succeeded: {result.items_succeeded}, Failed: {result.items_failed}")
-            print(f"     Duration: {result.duration_seconds:.1f}s")
-            if result.error:
-                print(f"     Error: {result.error}")
+            try:
+                status = "✓" if result.success else "✗"
+                workflow_name = getattr(result, 'workflow_name', str(result))
+                print(f"  {status} {workflow_name}:")
+                print(f"     Processed: {result.items_processed}, Succeeded: {result.items_succeeded}, Failed: {result.items_failed}")
+                print(f"     Duration: {result.duration_seconds:.1f}s")
+                if result.error:
+                    print(f"     Error: {result.error}")
+            except Exception as e:
+                print(f"  Error printing result: {e}, result type: {type(result)}")
         
         # Final State
         print("\nFINAL STATE:")
         print(f"  Issues: {report.final_state.open_issues_total} open (was {report.initial_state.open_issues_total})")
+        print(f"    - Unprocessed: {report.final_state.open_issues_unprocessed} (was {report.initial_state.open_issues_unprocessed})")
         print(f"  PRs: {report.final_state.open_prs_total} open (was {report.initial_state.open_prs_total})")
+        print(f"    - Ready to merge: {report.final_state.prs_ready_to_merge} (was {report.initial_state.prs_ready_to_merge})")
+        print(f"    - Pending review: {report.final_state.prs_pending_review} (was {report.initial_state.prs_pending_review})")
+        print(f"    - Changes requested: {report.final_state.prs_changes_requested} (was {report.initial_state.prs_changes_requested})")
+        print(f"    - Blocked: {report.final_state.prs_blocked} (was {report.initial_state.prs_blocked})")
         print(f"  Backlog reduction: {report.backlog_reduction} items")
         
         # Metrics

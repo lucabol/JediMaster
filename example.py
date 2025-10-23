@@ -328,12 +328,6 @@ async def main():
         use_topic_filter=use_topic_filter,
         manage_prs=getattr(args, 'manage_prs', False)
     ) as jedimaster:
-        # Show which mode we're using
-        mode = "labeling only" if just_label else "assigning"
-        filter_method = "topic 'managed-by-coding-agent'" if use_topic_filter else ".coding_agent file"
-        print(f"JediMaster mode: {mode}")
-        print(f"Filtering method: {filter_method}")
-
         # Auto-merge reviewed PRs if requested (PR-only operation, skips issue processing)
         if getattr(args, 'auto_merge_reviewed', False):
             print("Auto-merge mode: Only checking PRs for auto-merge, skipping issue processing...")
@@ -455,6 +449,12 @@ async def main():
             return
         
         # Normal processing mode (issues/PRs based on other flags)
+        # Show which mode we're using
+        mode = "labeling only" if just_label else "assigning"
+        filter_method = "topic 'managed-by-coding-agent'" if use_topic_filter else ".coding_agent file"
+        print(f"JediMaster mode: {mode}")
+        print(f"Filtering method: {filter_method}")
+        
         if args.user:
             username = args.user
             print(f"Processing user: {username}")

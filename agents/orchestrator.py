@@ -52,10 +52,12 @@ class OrchestratorAgent:
 Your goal is to reduce the number of open issues and PRs efficiently while respecting constraints.
 
 IMPORTANT PRINCIPLES:
-1. Copilot is always working on assigned issues - trust it's making progress
+1. Copilot capacity is based ONLY on ACTIVE PRs, not assigned issues
+   - Assigning issues to Copilot creates PRs; only the PRs consume capacity
+   - Track active PRs to determine if Copilot is overloaded
 2. The ONLY stuck state is when a PR exceeded MERGE_MAX_RETRIES
 3. Quick wins first: ALWAYS merge ready PRs before anything else
-4. Respect Copilot capacity: Don't overwhelm it
+4. Respect Copilot capacity: Don't overwhelm it with too many simultaneous PRs
 5. Conserve API quota: Prioritize high-value, low-cost work
 6. Clear backlogs before creating new issues
 
@@ -68,7 +70,7 @@ Available workflows:
 {chr(10).join(available_workflows)}
 
 STRATEGIC RULES:
-1. If Copilot at capacity → focus on clearing PRs, skip issue assignments
+1. If Copilot at capacity (too many active PRs) → focus on clearing PRs first
 2. If API quota low (<10% remaining) → only merge ready PRs, skip everything else
 3. If backlog >20 items → skip issue creation
 4. If blocked PRs exist → flag them for humans
@@ -182,21 +184,19 @@ REPOSITORY STATE:
 - Repository: {repo_state.repo}
 - Total backlog: {total_backlog} items ({repo_state.open_issues_total} issues, {repo_state.open_prs_total} PRs)
 - Unprocessed issues: {repo_state.open_issues_unprocessed}
-- Issues assigned to Copilot: {repo_state.copilot_active_issues}
 
 PRs by state:
 - Ready to merge: {repo_state.prs_ready_to_merge} ← QUICK WINS!
 - Pending review: {repo_state.prs_pending_review}
 - Changes requested: {repo_state.prs_changes_requested}
 - Blocked (merge retries exceeded): {repo_state.prs_blocked} ← Need human help
-- Done: {repo_state.prs_done}
 
-Copilot active work: {repo_state.copilot_active_issues} issues, {repo_state.copilot_active_prs} PRs
+Copilot active work: {repo_state.copilot_active_prs} PRs in flight
 
 RESOURCE CONSTRAINTS:
 - GitHub API: {resource_state.github_api_remaining}/{resource_state.github_api_limit} calls available
 - Estimated budget: Can safely process ~{resource_state.estimated_api_budget} items
-- Copilot Capacity: {resource_state.copilot_assigned_issues}/{resource_state.copilot_max_concurrent} issues assigned
+- Copilot Capacity: {resource_state.copilot_active_prs}/{resource_state.copilot_max_concurrent} active PRs
 - Copilot Available slots: {resource_state.copilot_available_slots}
 - Warnings: {', '.join(resource_state.warnings) if resource_state.warnings else 'None'}
 
@@ -209,11 +209,12 @@ PRIORITIZED WORKLOAD:
 
 Create an optimal execution plan. Remember:
 1. ALWAYS merge ready PRs first (instant wins, no LLM cost, frees Copilot)
-2. If Copilot at capacity ({resource_state.copilot_available_slots} slots) → focus on clearing PRs
-3. If API quota low → prioritize high-value, low-cost work
-4. If backlog >{20} items → skip issue creation
-5. If blocked PRs exist → flag them for humans
-6. Respect API budget: don't plan more work than we can handle
+2. Copilot capacity ({resource_state.copilot_available_slots} slots) is based on ACTIVE PRs only
+3. Assigning issues creates PRs which then consume Copilot capacity
+4. If API quota low → prioritize high-value, low-cost work
+5. If backlog >{20} items → skip issue creation
+6. If blocked PRs exist → flag them for humans
+7. Respect API budget: don't plan more work than we can handle
 
 Return your plan as JSON."""
     
@@ -239,19 +240,27 @@ Return your plan as JSON."""
                     reasoning='Fallback: alert humans to blocked PRs'
                 ))
             
-            # Review a few PRs if Copilot not maxed
-            if repo_state.prs_pending_review > 0 and resource_state.copilot_available_slots > 0:
+            # Review PRs regardless of Copilot capacity (reviewing helps clear them)
+            if repo_state.prs_pending_review > 0:
                 workflows.append(WorkflowStep(
                     name='review_prs',
                     batch_size=min(repo_state.prs_pending_review, 3),
-                    reasoning='Fallback: review small batch of PRs'
+                    reasoning='Fallback: review small batch of PRs to make progress'
+                ))
+            
+            # Process issues if any exist (capacity based on PRs, not issues)
+            if repo_state.open_issues_unprocessed > 0:
+                workflows.append(WorkflowStep(
+                    name='process_issues',
+                    batch_size=min(repo_state.open_issues_unprocessed, 3),
+                    reasoning='Fallback: process small batch of issues'
                 ))
         
         return ExecutionPlan(
             strategy="Fallback plan: LLM unavailable, using conservative defaults",
             workflows=workflows,
-            skip_workflows=['process_issues', 'create_issues'],
-            estimated_api_calls=25,
+            skip_workflows=['create_issues'],
+            estimated_api_calls=50,
             warnings=["Using fallback plan due to orchestrator failure"]
         )
     

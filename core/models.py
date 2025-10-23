@@ -14,7 +14,6 @@ class RepoState:
     # Issues
     open_issues_total: int
     open_issues_unprocessed: int  # No copilot labels yet
-    open_issues_assigned_to_copilot: int
     
     # PRs by state (from copilot-state labels)
     open_prs_total: int
@@ -25,7 +24,6 @@ class RepoState:
     prs_done: int
     
     # Quick stats
-    copilot_active_issues: int  # Issues assigned to Copilot
     copilot_active_prs: int     # PRs Copilot is working on
     quick_wins_available: int   # PRs ready to merge (immediate wins)
     truly_blocked_prs: int      # PRs that exceeded retry limit
@@ -40,10 +38,9 @@ class ResourceState:
     github_api_reset_at: datetime
     estimated_api_budget: int  # How many items we can safely process
     
-    # Copilot Capacity
-    copilot_assigned_issues: int      # Current workload
+    # Copilot Capacity (based on active PRs only)
     copilot_max_concurrent: int       # Capacity limit (configurable)
-    copilot_available_slots: int      # Can assign N more issues
+    copilot_available_slots: int      # Can work on N more PRs
     copilot_active_prs: int           # PRs in flight
     
     # Warnings

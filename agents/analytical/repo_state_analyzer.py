@@ -27,7 +27,6 @@ class RepoStateAnalyzer:
         issues = [i for i in all_issues if not i.pull_request]
         
         unprocessed_issues = []
-        copilot_assigned_issues = []
         
         for issue in issues:
             labels = {label.name.lower() for label in issue.labels}
@@ -35,10 +34,6 @@ class RepoStateAnalyzer:
             # Unprocessed: no copilot labels
             if not labels.intersection({'copilot-candidate', 'no-github-copilot'}):
                 unprocessed_issues.append(issue)
-            
-            # Copilot assigned
-            if any('copilot' in (a.login or '').lower() for a in issue.assignees):
-                copilot_assigned_issues.append(issue)
         
         # Analyze PRs
         all_prs = list(repo.get_pulls(state='open'))
@@ -67,7 +62,6 @@ class RepoStateAnalyzer:
                     pr_states['blocked'].append(pr)
         
         # Calculate derived metrics
-        copilot_active_issues = len(copilot_assigned_issues)
         copilot_active_prs = sum(len(prs) for state, prs in pr_states.items() if state != 'done')
         quick_wins = len(pr_states['ready_to_merge'])
         blocked_count = len(pr_states['blocked'])
@@ -77,14 +71,12 @@ class RepoStateAnalyzer:
             timestamp=now,
             open_issues_total=len(issues),
             open_issues_unprocessed=len(unprocessed_issues),
-            open_issues_assigned_to_copilot=copilot_active_issues,
             open_prs_total=len(all_prs),
             prs_pending_review=len(pr_states['pending_review']),
             prs_changes_requested=len(pr_states['changes_requested']),
             prs_ready_to_merge=len(pr_states['ready_to_merge']),
             prs_blocked=blocked_count,
             prs_done=len(pr_states['done']),
-            copilot_active_issues=copilot_active_issues,
             copilot_active_prs=copilot_active_prs,
             quick_wins_available=quick_wins,
             truly_blocked_prs=blocked_count
