@@ -1311,9 +1311,16 @@ class JediMaster:
         copilot_review_requested = metadata.get('copilot_review_requested', False)
         review_decision = metadata.get('review_decision')
         last_commit_time = metadata.get('last_commit_time')
+        requested_reviewers = metadata.get('requested_reviewers', [])
 
-        if metadata.get('merged') or metadata.get('state') == 'closed':
+        if metadata.get('merged') or metadata.get('state') == 'closed'):
             return {'state': STATE_DONE, 'reason': 'pr_closed'}
+
+        # Check if there are explicit review requests - these take priority over change requests
+        # This handles the case where Copilot pushes changes and re-requests review
+        if requested_reviewers and not is_draft:
+            self.logger.info(f"PR #{pr.number}: Review requested from {requested_reviewers}, classifying as pending_review")
+            return {'state': STATE_PENDING_REVIEW, 'reason': 'review_requested'}
 
         # If any reviewer (Copilot or human) requested changes, check if addressed
         if any_changes_pending:
@@ -1338,7 +1345,6 @@ class JediMaster:
             return {'state': STATE_READY_TO_MERGE, 'reason': 'ready'}
 
         needs_review = False
-        requested_reviewers = metadata.get('requested_reviewers', [])
         self.logger.info(f"PR #{pr.number}: draft={is_draft}, reviewers={requested_reviewers}")
         
         # Check for draft PRs with human reviewers (Copilot finished and wants review)
@@ -1351,10 +1357,6 @@ class JediMaster:
         
         if copilot_review_requested:
             # If Copilot review is explicitly requested, it needs review regardless of draft status
-            needs_review = True
-        elif requested_reviewers and not is_draft:
-            # If any reviewers are requested on a non-draft PR, it needs review
-            # This handles the case where a blocked PR gets a review re-request
             needs_review = True
         elif not is_draft and not has_current_approval and not copilot_changes_pending:
             if review_decision == 'REVIEW_REQUIRED':
