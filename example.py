@@ -303,11 +303,6 @@ async def main():
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return
 
-    # Set up logging level (like jedimaster.py)
-    if args.verbose:
-        import logging
-        logging.getLogger('jedimaster').setLevel(logging.DEBUG)
-
     # If --create-issues is set, use CreatorAgent for each repo
     if getattr(args, 'create_issues', False):
         if args.user:
@@ -326,7 +321,8 @@ async def main():
         azure_foundry_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
-        manage_prs=getattr(args, 'manage_prs', False)
+        manage_prs=getattr(args, 'manage_prs', False),
+        verbose=args.verbose
     ) as jedimaster:
         # Auto-merge reviewed PRs if requested (PR-only operation, skips issue processing)
         if getattr(args, 'auto_merge_reviewed', False):

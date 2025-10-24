@@ -1313,7 +1313,7 @@ class JediMaster:
         last_commit_time = metadata.get('last_commit_time')
         requested_reviewers = metadata.get('requested_reviewers', [])
 
-        if metadata.get('merged') or metadata.get('state') == 'closed'):
+        if metadata.get('merged') or metadata.get('state') == 'closed':
             return {'state': STATE_DONE, 'reason': 'pr_closed'}
 
         # Check if there are explicit review requests - these take priority over change requests
@@ -1774,13 +1774,14 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.github = Github(github_token)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
         self.manage_prs = manage_prs
+        self.verbose = verbose
         self.logger = self._setup_logger()
         # Get merge retry limit from environment
         self.merge_max_retries = self._get_merge_max_retries()
@@ -1900,12 +1901,27 @@ class JediMaster:
 
     def _setup_logger(self) -> logging.Logger:
         logger = logging.getLogger('jedimaster')
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG if self.verbose else logging.INFO)
+        # Prevent propagation to root logger to avoid duplicate messages
+        logger.propagate = False
         if not logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+            if self.verbose:
+                # Verbose: show timestamp, file, line number, and level
+                formatter = logging.Formatter('[%(asctime)s - %(pathname)s:%(lineno)d - %(levelname)s] %(message)s')
+            else:
+                # Non-verbose: only show the message
+                formatter = logging.Formatter('%(message)s')
             handler.setFormatter(formatter)
             logger.addHandler(handler)
+        else:
+            # Update existing handler formatters if verbose setting changed
+            for handler in logger.handlers:
+                if self.verbose:
+                    formatter = logging.Formatter('[%(asctime)s - %(pathname)s:%(lineno)d - %(levelname)s] %(message)s')
+                else:
+                    formatter = logging.Formatter('%(message)s')
+                handler.setFormatter(formatter)
         return logger
 
     def _check_rate_limit_status(self) -> tuple[bool, str]:
@@ -2228,8 +2244,10 @@ class JediMaster:
             
             elif workflow.name == 'review_prs':
                 # Review PRs (uses PRDeciderAgent LLM)
-                pr_numbers = workload.pending_review_prs[:workflow.batch_size]
-                self.logger.info(f"Executing review_prs workflow with PR numbers: {pr_numbers} from workload.pending_review_prs={workload.pending_review_prs}")
+                # Include both pending_review AND changes_requested PRs (the state machine will decide what to do)
+                combined_prs = workload.pending_review_prs + workload.changes_requested_prs
+                pr_numbers = combined_prs[:workflow.batch_size]
+                self.logger.info(f"Executing review_prs workflow with PR numbers: {pr_numbers} (pending={workload.pending_review_prs}, changes_requested={workload.changes_requested_prs})")
                 results = await self._execute_review_workflow(repo_name, pr_numbers)
                 return WorkflowResult(
                     workflow_name=workflow.name,

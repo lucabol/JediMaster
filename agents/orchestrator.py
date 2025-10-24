@@ -40,7 +40,7 @@ class OrchestratorAgent:
         # Build system prompt dynamically based on configuration
         available_workflows = [
             "- merge_ready_prs: Merge approved PRs (no LLM, fast, highest priority)",
-            "- review_prs: Review PRs needing evaluation (uses PRDeciderAgent LLM)",
+            "- review_prs: Review PRs needing evaluation, including both pending review and changes_requested PRs (uses PRDeciderAgent LLM)",
             "- process_issues: Evaluate and assign issues (uses DeciderAgent LLM)",
             "- flag_blocked_prs: Mark PRs that exceeded retry limit (no LLM)"
         ]
@@ -205,6 +205,7 @@ PRIORITIZED WORKLOAD:
 - Blocked PRs needing attention: {len(workload.blocked_prs)}
 - PRs pending review: {len(workload.pending_review_prs)}
 - PRs with changes requested: {len(workload.changes_requested_prs)}
+  NOTE: The review_prs workflow will process BOTH pending_review and changes_requested PRs
 - Unprocessed issues: {len(workload.unprocessed_issues)}
 
 Create an optimal execution plan. Remember:
