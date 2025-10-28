@@ -180,13 +180,20 @@ def populate_repo_with_issues():
 
 async def main():
     """Example of using JediMaster programmatically."""
+    # Load environment variables from .env file first (before parsing arguments)
+    load_dotenv(override=True)
+    
+    # Get default repositories from AUTOMATION_REPOS environment variable
+    default_repos_str = os.getenv('AUTOMATION_REPOS', 'lucabol/Hello-World')
+    default_repos = [repo.strip() for repo in default_repos_str.split(',') if repo.strip()]
+    
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Example usage of JediMaster - Label or assign GitHub issues to Copilot and optionally process PRs')
 
     # Create mutually exclusive group for repositories vs user (similar to jedimaster.py)
     group = parser.add_mutually_exclusive_group(required=False)  # Not required for example script
-    group.add_argument('repositories', nargs='*', default=['lucabol/Hello-World'],
-                       help='GitHub repositories to process (format: owner/repo)')
+    group.add_argument('repositories', nargs='*', default=default_repos,
+                       help='GitHub repositories to process (format: owner/repo, default from AUTOMATION_REPOS env var)')
     group.add_argument('--user', '-u',
                        help='GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)')
 
@@ -290,10 +297,7 @@ async def main():
     # Determine filtering method
     use_topic_filter = not args.use_file_filter  # Default to topic filtering unless file filtering is explicitly requested
 
-    # Load environment variables from .env file (if it exists)
-    load_dotenv(override=True)
-
-    # Get credentials from environment (either from .env or system environment)
+    # Get credentials from environment (already loaded at start of main())
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
 

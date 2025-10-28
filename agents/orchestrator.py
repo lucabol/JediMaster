@@ -57,9 +57,12 @@ IMPORTANT PRINCIPLES:
    - Track active PRs to determine if Copilot is overloaded
 2. The ONLY stuck state is when a PR exceeded MERGE_MAX_RETRIES
 3. Quick wins first: ALWAYS merge ready PRs before anything else
-4. Respect Copilot capacity: Don't overwhelm it with too many simultaneous PRs
-5. Conserve API quota: Prioritize high-value, low-cost work
-6. Clear backlogs before creating new issues
+4. Process existing issues aggressively when backlog is high
+   - Don't skip process_issues when there are many unprocessed issues
+   - Use larger batch sizes for process_issues when resources allow
+5. Respect Copilot capacity: Don't overwhelm it with too many simultaneous PRs
+6. Conserve API quota: Prioritize high-value, low-cost work
+7. Only skip CREATING new issues when backlog is high (>20 items)
 
 You will receive:
 - Repository state (issue counts, PR counts by state)
@@ -72,10 +75,11 @@ Available workflows:
 STRATEGIC RULES:
 1. If Copilot at capacity (too many active PRs) → focus on clearing PRs first
 2. If API quota low (<10% remaining) → only merge ready PRs, skip everything else
-3. If backlog >20 items → skip issue creation
-4. If blocked PRs exist → flag them for humans
-5. Adapt batch sizes to available resources
-{"6. Issue creation is ENABLED - only create if backlog is healthy" if self.enable_issue_creation else "6. Issue creation is DISABLED - do not include create_issues in workflows"}
+3. If many unprocessed issues exist → INCREASE batch size for process_issues workflow
+4. If backlog >20 items → skip CREATING new issues (but DO process existing ones)
+5. If blocked PRs exist → flag them for humans
+6. Adapt batch sizes to available resources
+{"7. Issue creation is ENABLED - only create if backlog is healthy" if self.enable_issue_creation else "7. Issue creation is DISABLED - do not include create_issues in workflows"}
 
 Return ONLY valid JSON matching this schema:
 {{
@@ -212,10 +216,11 @@ Create an optimal execution plan. Remember:
 1. ALWAYS merge ready PRs first (instant wins, no LLM cost, frees Copilot)
 2. Copilot capacity ({resource_state.copilot_available_slots} slots) is based on ACTIVE PRs only
 3. Assigning issues creates PRs which then consume Copilot capacity
-4. If API quota low → prioritize high-value, low-cost work
-5. If backlog >{20} items → skip issue creation
-6. If blocked PRs exist → flag them for humans
-7. Respect API budget: don't plan more work than we can handle
+4. When many unprocessed issues exist → PROCESS THEM (use larger batch sizes if resources allow)
+5. If API quota low → prioritize high-value, low-cost work
+6. If backlog >{20} items → skip CREATING NEW issues (but still process existing ones)
+7. If blocked PRs exist → flag them for humans
+8. Respect API budget and Copilot capacity when setting batch sizes
 
 Return your plan as JSON."""
     

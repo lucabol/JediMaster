@@ -38,7 +38,8 @@ class CreatorAgent:
             "Each issue should be specific, actionable, and relevant to the code or documentation. "
             "Do not include duplicate or trivial issues. Make sure each issue is distinct and addresses different aspects of the project. "
             "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
-            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Description 1'}, {'title': 'Issue 2', 'body': 'Description 2'}]}"
+            "IMPORTANT: Keep the 'body' field concise - use a single paragraph without newlines. Do not use multi-line strings. "
+            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Single line description'}, {'title': 'Issue 2', 'body': 'Another single line description'}]}"
         )
 
     async def __aenter__(self):
@@ -432,7 +433,19 @@ class CreatorAgent:
                     cleaned_response = cleaned_response[:-3]
                 cleaned_response = cleaned_response.strip()
                 
-                issues = json.loads(cleaned_response)
+                # Try to parse as JSON
+                try:
+                    issues = json.loads(cleaned_response)
+                except json.JSONDecodeError:
+                    # If JSON parsing fails, try to extract just the JSON content
+                    # Look for the outermost { } or [ ]
+                    import re
+                    json_match = re.search(r'(\{.*\}|\[.*\])', cleaned_response, re.DOTALL)
+                    if json_match:
+                        cleaned_response = json_match.group(1)
+                        issues = json.loads(cleaned_response)
+                    else:
+                        raise
                 
                 self.logger.info(f"Agent response type: {type(issues)}")
                 self.logger.debug(f"Agent response content: {issues}")

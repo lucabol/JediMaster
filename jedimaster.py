@@ -516,8 +516,12 @@ class JediMaster:
         # Add human escalation label for stuck PRs
         if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
             try:
+                # Remove all existing labels before adding human escalation label
+                existing_labels = list(pr.get_labels())
+                for label in existing_labels:
+                    pr.remove_from_labels(label.name)
                 pr.add_to_labels(HUMAN_ESCALATION_LABEL)
-                self.logger.info(f"Added human escalation label to blocked PR #{pr.number}")
+                self.logger.info(f"Added human escalation label to blocked PR #{pr.number} (removed {len(existing_labels)} other labels)")
             except Exception as e:
                 self.logger.error(f"Failed to add escalation label to PR #{pr.number}: {e}")
         
@@ -1118,7 +1122,12 @@ class JediMaster:
 
         if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
             try:
+                # Remove all existing labels before adding human escalation label
+                existing_labels = list(pr.get_labels())
+                for label in existing_labels:
+                    pr.remove_from_labels(label.name)
                 pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                self.logger.info(f"Added human escalation label to PR #{getattr(pr, 'number', '?')} (removed {len(existing_labels)} other labels)")
             except Exception as exc:
                 self.logger.error(f"Failed to apply human escalation label to PR #{getattr(pr, 'number', '?')}: {exc}")
 
@@ -2358,6 +2367,10 @@ class JediMaster:
         for pr_number in pr_numbers:
             try:
                 pr = repo.get_pull(pr_number)
+                # Remove all existing labels before adding human escalation label
+                existing_labels = list(pr.get_labels())
+                for label in existing_labels:
+                    pr.remove_from_labels(label.name)
                 # Add human escalation label
                 pr.add_to_labels(HUMAN_ESCALATION_LABEL)
                 # Add comment explaining the situation
@@ -2365,7 +2378,7 @@ class JediMaster:
                     f"This PR has exceeded the maximum merge retry limit and needs human review. "
                     f"Please investigate the merge conflicts or other blocking issues."
                 )
-                self.logger.info(f"Flagged PR #{pr_number} for human review")
+                self.logger.info(f"Flagged PR #{pr_number} for human review (removed {len(existing_labels)} other labels)")
                 results.append({
                     'pr_number': pr_number,
                     'status': 'flagged',
@@ -2453,6 +2466,12 @@ class JediMaster:
             results = pr_results if pr_results is not None else report.pr_results
             summary_rows.append(("Mode", "PR review"))
             summary_rows.append(("Pull requests reviewed", len(results)))
+            
+            # Count PRs with human review label
+            human_review_count = sum(1 for r in results if r.status == 'human_escalated')
+            if human_review_count > 0:
+                summary_rows.append(("PRs escalated to human review", human_review_count))
+            
             status_counts = Counter(r.status for r in results)
             ordered_statuses = [
                 "changes_requested",
@@ -2478,6 +2497,12 @@ class JediMaster:
             results = pr_results if pr_results is not None else report.pr_results
             summary_rows.append(("Mode", "Auto-merge"))
             summary_rows.append(("Pull requests evaluated", len(results)))
+            
+            # Count PRs with human review label
+            human_review_count = sum(1 for r in results if r.status == 'human_escalated')
+            if human_review_count > 0:
+                summary_rows.append(("PRs escalated to human review", human_review_count))
+            
             status_counts = Counter(r.status for r in results)
             ordered_statuses = [
                 "merged",
