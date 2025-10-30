@@ -211,11 +211,9 @@ async def main():
     parser.add_argument('--manage-prs', action='store_true',
                        help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
     parser.add_argument('--orchestrate', action='store_true',
-                       help='Use intelligent orchestration (LLM-based strategic planning) to decide workflows')
-    parser.add_argument('--enable-issue-creation', action='store_true',
-                       help='Allow orchestrator to create new issues (only used with --orchestrate)')
+                       help='Use simplified workflow: process PRs first, then assign issues based on Copilot capacity')
     parser.add_argument('--loop', type=int, nargs='?', const=30, metavar='MINUTES',
-                       help='Run orchestrator continuously, checking every N minutes (default: 30). Requires --orchestrate flag. Designed for autonomous continuous operation.')
+                       help='Run workflow continuously, checking every N minutes (default: 30). Requires --orchestrate flag. Designed for autonomous continuous operation.')
     parser.add_argument('--create-issues', action='store_true',
                        help='Use CreatorAgent to suggest and open new issues in the specified repositories')
     parser.add_argument('--create-issues-count', type=int, default=3,
@@ -373,7 +371,7 @@ async def main():
             print(f"\nAuto-merge complete.")
             return
         
-        # Orchestrated mode - intelligent workflow selection
+        # Simplified workflow mode - process PRs then assign issues based on capacity
         if args.orchestrate:
             if args.user:
                 print("--orchestrate does not support --user mode. Please specify repositories explicitly.")
@@ -387,17 +385,10 @@ async def main():
                 if loop_minutes < 1:
                     print("Error: Loop interval must be at least 1 minute")
                     return
-                print(f"[Orchestrator] Running in LOOP mode: checking every {loop_minutes} minutes")
-                print(f"[Orchestrator] Press Ctrl+C to stop")
+                print(f"[SimplifiedWorkflow] Running in LOOP mode: checking every {loop_minutes} minutes")
+                print(f"[SimplifiedWorkflow] Press Ctrl+C to stop")
             else:
-                print(f"[Orchestrator] Running intelligent orchestration on: {repo_names}")
-            
-            # Check for issue creation flag
-            enable_issue_creation = getattr(args, 'enable_issue_creation', False)
-            if enable_issue_creation:
-                print("[Orchestrator] Issue creation ENABLED")
-            else:
-                print("[Orchestrator] Issue creation DISABLED (use --enable-issue-creation to enable)")
+                print(f"[SimplifiedWorkflow] Running on: {repo_names}")
             
             iteration = 0
             try:
@@ -407,19 +398,31 @@ async def main():
                     if loop_minutes is not None:
                         now = datetime.now(timezone.utc)
                         print(f"\n{'='*80}")
-                        print(f"[Orchestrator] Iteration #{iteration} at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                        print(f"[SimplifiedWorkflow] Iteration #{iteration} at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                         print(f"{'='*80}")
                     
                     for repo_name in repo_names:
                         if loop_minutes is None:
                             print(f"\n{'='*80}")
-                            print(f"Orchestrating: {repo_name}")
+                            print(f"Processing: {repo_name}")
                             print(f"{'='*80}")
                         else:
-                            print(f"\n--- Orchestrating: {repo_name} ---")
+                            print(f"\n--- Processing: {repo_name} ---")
                         
-                        report = await jedimaster.orchestrated_run(repo_name, enable_issue_creation=enable_issue_creation)
-                        jedimaster.print_orchestration_report(report)
+                        report = await jedimaster.run_simplified_workflow(repo_name)
+                        
+                        # Print summary
+                        if report['success']:
+                            metrics = report['metrics']
+                            print(f"\n[SimplifiedWorkflow] Summary for {repo_name}:")
+                            print(f"  Duration: {report['duration_seconds']:.1f}s")
+                            print(f"  PRs processed: {metrics['prs_processed']}")
+                            print(f"  Issues processed: {metrics['issues_processed']}")
+                            print(f"  Issues assigned: {metrics['issues_assigned']}")
+                            print(f"  Copilot capacity: {metrics['copilot_active_count']}/{metrics['copilot_max_concurrent']} active")
+                            print(f"  Available slots: {metrics['copilot_available_slots']}")
+                        else:
+                            print(f"\n[SimplifiedWorkflow] Error processing {repo_name}: {report.get('error', 'Unknown error')}")
                     
                     # If not in loop mode, exit after one iteration
                     if loop_minutes is None:
@@ -433,17 +436,17 @@ async def main():
                     next_run = next_run + dt.timedelta(minutes=loop_minutes)
                     
                     print(f"\n{'='*80}")
-                    print(f"[Orchestrator] Iteration #{iteration} complete")
-                    print(f"[Orchestrator] Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                    print(f"[Orchestrator] Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
+                    print(f"[SimplifiedWorkflow] Iteration #{iteration} complete")
+                    print(f"[SimplifiedWorkflow] Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                    print(f"[SimplifiedWorkflow] Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
                     print(f"{'='*80}")
                     
                     # Sleep for the specified interval
                     await asyncio.sleep(loop_minutes * 60)
                     
             except KeyboardInterrupt:
-                print(f"\n\n[Orchestrator] Loop stopped by user (Ctrl+C)")
-                print(f"[Orchestrator] Completed {iteration} iteration(s)")
+                print(f"\n\n[SimplifiedWorkflow] Loop stopped by user (Ctrl+C)")
+                print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
                 return
             
             return
