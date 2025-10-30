@@ -68,7 +68,24 @@ class ProcessingReport:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
+COPILOT_STATE_LABEL_PREFIX = "copilot-state:"
+MERGE_ATTEMPT_LABEL_PREFIX = "merge-attempt-"
 HUMAN_ESCALATION_LABEL = "copilot-human-review"
+
+STATE_INTAKE = "intake"
+STATE_PENDING_REVIEW = "pending_review"
+STATE_CHANGES_REQUESTED = "changes_requested"
+STATE_READY_TO_MERGE = "ready_to_merge"
+STATE_BLOCKED = "blocked"
+STATE_DONE = "done"
+
+COPILOT_LABEL_PALETTE = {
+    STATE_PENDING_REVIEW: ("0366d6", "Awaiting Copilot review"),
+    STATE_CHANGES_REQUESTED: ("d73a49", "Awaiting author updates"),
+    STATE_READY_TO_MERGE: ("28a745", "Ready for merge"),
+    STATE_BLOCKED: ("6a737d", "Blocked until manual action"),
+    STATE_DONE: ("5319e7", "Processing complete"),
+}
 
 
 class JediMaster:
@@ -543,15 +560,10 @@ class JediMaster:
         ]
 
     async def _process_pr_state_machine(self, pr) -> List[PRRunResult]:
-        """
-        Simplified PR processing: Review if ready, merge if approved.
-        Only uses human-escalation label. Checks if Copilot is working before processing.
-        """
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
-        repo = pr.base.repo
 
-        # Skip PRs that need human intervention
+        # Skip PRs that have been escalated to humans
         if self._has_label(pr, HUMAN_ESCALATION_LABEL):
             results.append(
                 PRRunResult(
@@ -559,168 +571,118 @@ class JediMaster:
                     pr_number=pr.number,
                     title=pr.title,
                     status='human_escalated',
-                    details='Escalated to human reviewer',
-                    action='skip',
+                    details='Escalated to human reviewer (label present).',
+                    action='skip_human_escalation',
                 )
             )
             return results
 
-        # Check if should escalate based on comment count
+        # Skip PRs assigned to humans (non-Copilot assignees) ONLY if Copilot is NOT assigned
+        try:
+            assignees = list(pr.assignees) if hasattr(pr, 'assignees') else []
+            has_copilot_assignee = any('copilot' in getattr(a, 'login', '').lower() for a in assignees)
+            has_human_assignee = any('copilot' not in getattr(a, 'login', '').lower() for a in assignees)
+            
+            # Only skip if there's a human assignee but NO Copilot assignee
+            if has_human_assignee and not has_copilot_assignee:
+                human_assignees = [getattr(a, 'login', 'unknown') for a in assignees if 'copilot' not in getattr(a, 'login', '').lower()]
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='human_assigned',
+                        details=f'Assigned to human reviewer(s): {", ".join(human_assignees)} (no Copilot assignment)',
+                        action='skip_human_assigned',
+                    )
+                )
+                return results
+        except Exception as exc:
+            self.logger.debug(f"Failed to check assignees for PR #{getattr(pr, 'number', '?')}: {exc}")
+
         should_escalate, merge_conflict_count, regular_count = self._should_escalate_for_human(pr)
         if should_escalate:
             self._escalate_pr_to_human(pr, merge_conflict_count, regular_count)
+            total_count = merge_conflict_count + regular_count
             results.append(
                 PRRunResult(
                     repo=repo_full,
                     pr_number=pr.number,
                     title=pr.title,
                     status='human_escalated',
-                    details=f'Too many comments ({merge_conflict_count + regular_count})',
-                    action='escalate',
+                    details=f'Escalated: {merge_conflict_count} merge conflict + {regular_count} regular = {total_count} comments.',
+                    action='apply_human_escalation',
                 )
             )
             return results
 
-        # Skip if Copilot is actively working
-        if self._is_copilot_actively_working(pr.number, repo):
+        metadata = self._collect_pr_metadata(pr)
+        classification = self._classify_pr_state(pr, metadata)
+        self.logger.info(f"PR #{pr.number} classified as: {classification}")
+        desired_state = classification['state']
+        current_state = self._get_state_label(pr)
+
+        if current_state is None:
+            self._set_state_label(pr, desired_state)
             results.append(
                 PRRunResult(
                     repo=repo_full,
                     pr_number=pr.number,
                     title=pr.title,
-                    status='copilot_working',
-                    details='Copilot is actively working',
-                    action='skip',
+                    status='state_transition',
+                    details=f"Initial classification: {classification['reason']}",
+                    state_before=STATE_INTAKE,
+                    state_after=desired_state,
+                    action='classify',
                 )
             )
-            return results
-
-        # Refresh PR data
-        try:
-            pr.update()
-        except Exception as exc:
-            self.logger.error(f"Failed to refresh PR #{pr.number}: {exc}")
-
-        # If PR is closed/merged, clean up
-        if pr.state == 'closed' or pr.merged:
-            return await self._cleanup_closed_pr(pr)
-
-        # If PR has review requests (and not draft), review it
-        try:
-            requested_reviewers = list(pr.get_review_requests()[0]) if hasattr(pr, 'get_review_requests') else []
-            has_review_requests = len(requested_reviewers) > 0
-        except Exception as exc:
-            self.logger.debug(f"Failed to get review requests for PR #{pr.number}: {exc}")
-            has_review_requests = False
-
-        is_draft = getattr(pr, 'draft', False)
-        
-        if has_review_requests and not is_draft:
-            return await self._review_pr(pr)
-
-        # Check if PR is approved
-        is_approved = False
-        try:
-            reviews = list(pr.get_reviews())
-            # Get latest review from each user
-            latest_reviews = {}
-            for review in reviews:
-                user = review.user.login if review.user else 'unknown'
-                if user not in latest_reviews or review.submitted_at > latest_reviews[user].submitted_at:
-                    latest_reviews[user] = review
-            # Check if any latest review is an approval
-            for review in latest_reviews.values():
-                if review.state == 'APPROVED':
-                    is_approved = True
-                    break
-        except Exception as exc:
-            self.logger.debug(f"Failed to check approvals for PR #{pr.number}: {exc}")
-
-        # If PR is approved and mergeable, try to merge
-        is_mergeable = getattr(pr, 'mergeable', None) is True
-        
-        if is_approved and is_mergeable and not is_draft:
-            return await self._merge_pr(pr)
-
-        # Nothing to do - PR is waiting for something (author, Copilot, etc.)
-        results.append(
-            PRRunResult(
-                repo=repo_full,
-                pr_number=pr.number,
-                title=pr.title,
-                status='waiting',
-                details='Waiting for updates',
-                action='none',
-            )
-        )
-        return results
-    
-    async def _cleanup_closed_pr(self, pr) -> List[PRRunResult]:
-        """Clean up closed/merged PRs."""
-        results: List[PRRunResult] = []
-        repo_full = pr.base.repo.full_name
-        
-        # Nothing special to do for closed PRs currently
-        results.append(
-            PRRunResult(
-                repo=repo_full,
-                pr_number=pr.number,
-                title=pr.title,
-                status='closed',
-                details='PR is closed or merged',
-                action='skip',
-            )
-        )
-        return results
-    
-    async def _review_pr(self, pr) -> List[PRRunResult]:
-        """Review a PR using the PR decider agent."""
-        results: List[PRRunResult] = []
-        repo_full = pr.base.repo.full_name
-        
-        # Get PR diff
-        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
-        diff_content, pre_result = self._fetch_pr_diff(pr, repo_full)
-        if pre_result:
-            results.append(pre_result)
-            return results
-
-        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
-
-        # Call agent to evaluate PR
-        try:
-            agent_result = await self.pr_decider.evaluate_pr(pr_text)
-        except Exception as exc:
-            self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
+            current_state = desired_state
+        elif current_state != desired_state:
+            previous_state = current_state
+            self._set_state_label(pr, desired_state)
             results.append(
                 PRRunResult(
                     repo=repo_full,
                     pr_number=pr.number,
                     title=pr.title,
-                    status='error',
-                    details=self._shorten_text(str(exc)),
-                    action='review_failed',
+                    status='state_transition',
+                    details=f"Reclassified: {classification['reason']}",
+                    state_before=previous_state,
+                    state_after=desired_state,
+                    action='reclassify',
                 )
             )
-            return results
+            current_state = desired_state
 
-        # If agent requests changes, post review
-        if 'comment' in agent_result:
-            comment_body = f"@copilot {agent_result['comment']}"
+        handler_map = {
+            STATE_PENDING_REVIEW: self._handle_pending_review_state,
+            STATE_CHANGES_REQUESTED: self._handle_changes_requested_state,
+            STATE_READY_TO_MERGE: self._handle_ready_to_merge_state,
+            STATE_BLOCKED: self._handle_blocked_state,
+        }
+
+        if current_state == STATE_DONE:
+            # Only clean up if residual merge attempt labels remain.
             try:
-                pr.create_review(event='REQUEST_CHANGES', body=comment_body)
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='changes_requested',
-                        details=self._shorten_text(comment_body),
-                        action='request_changes',
-                    )
-                )
+                labels = pr.get_labels() if hasattr(pr, 'get_labels') else pr.labels
+                if any((getattr(label, 'name', '') or '').startswith(MERGE_ATTEMPT_LABEL_PREFIX) for label in labels):
+                    results.extend(self._handle_done_state(pr, metadata))
+            except Exception:
+                pass
+            return results
+
+        handler = handler_map.get(current_state)
+        if handler:
+            try:
+                # Debug logging to help identify the metadata scoping issue
+                self.logger.debug(f"About to call handler for PR #{pr.number} state {current_state}")
+                self.logger.debug(f"Metadata keys: {list(metadata.keys()) if isinstance(metadata, dict) else 'NOT_DICT'}")
+                handler_results = await handler(pr, metadata, classification)
+                results.extend(handler_results)
             except Exception as exc:
-                self.logger.error(f"Failed to request changes on PR #{pr.number}: {exc}")
+                import traceback
+                self.logger.error(f"Handler failure for PR #{pr.number} state {current_state}: {exc}")
+                self.logger.error(f"Full traceback: {traceback.format_exc()}")
                 results.append(
                     PRRunResult(
                         repo=repo_full,
@@ -728,96 +690,11 @@ class JediMaster:
                         title=pr.title,
                         status='error',
                         details=self._shorten_text(str(exc)),
-                        action='request_changes_failed',
+                        state_before=current_state,
+                        state_after=current_state,
+                        action='handler_error',
                     )
                 )
-        # If agent approves, post approval
-        elif 'approval' in agent_result and agent_result['approval']:
-            try:
-                pr.create_review(event='APPROVE', body='Changes look good!')
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='approved',
-                        details='PR approved by agent',
-                        action='approve',
-                    )
-                )
-            except Exception as exc:
-                self.logger.error(f"Failed to approve PR #{pr.number}: {exc}")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='error',
-                        details=self._shorten_text(str(exc)),
-                        action='approve_failed',
-                    )
-                )
-        else:
-            # Agent didn't provide clear action
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='reviewed',
-                    details='Agent reviewed but no clear action',
-                    action='none',
-                )
-            )
-        
-        return results
-    
-    async def _merge_pr(self, pr) -> List[PRRunResult]:
-        """Attempt to merge an approved PR."""
-        results: List[PRRunResult] = []
-        repo_full = pr.base.repo.full_name
-        repo = pr.base.repo
-        
-        try:
-            # Try to merge
-            pr.merge(merge_method='squash')
-            
-            # Close linked issues
-            closed_issues = self._close_linked_issues(repo, pr.number, pr.title)
-            
-            # Delete branch if configured
-            try:
-                self._delete_pr_branch(pr)
-            except Exception as exc:
-                self.logger.debug(f"Failed to delete branch for PR #{pr.number}: {exc}")
-            
-            details = f'Merged successfully'
-            if closed_issues:
-                details += f' (closed issues: {closed_issues})'
-            
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='merged',
-                    details=details,
-                    action='merge',
-                )
-            )
-        except Exception as exc:
-            self.logger.error(f"Failed to merge PR #{pr.number}: {exc}")
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='merge_error',
-                    details=self._shorten_text(str(exc)),
-                    action='merge_failed',
-                )
-            )
-        
         return results
 
     async def manage_pull_requests(self, repo_name: str, batch_size: int = 15) -> List[PRRunResult]:
