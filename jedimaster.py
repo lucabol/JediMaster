@@ -1150,6 +1150,88 @@ class JediMaster:
             f"{message}\nMerge conflict comments: {merge_conflict_count}, Regular comments: {regular_count}, Total: {total_count}.",
         )
 
+    def _get_copilot_work_status(self, pr) -> Dict[str, Any]:
+        """
+        Analyze timeline events to determine if Copilot is actively working.
+        
+        Returns dict with:
+            - is_working: bool (Copilot currently working)
+            - last_start: datetime or None
+            - last_finish: datetime or None  
+            - last_error: str or None
+            - error_time: datetime or None
+        """
+        try:
+            timeline = pr.as_issue().get_timeline()
+            
+            copilot_start = None
+            copilot_finish = None
+            copilot_error = None
+            copilot_error_time = None
+            
+            for event in timeline:
+                # Only check comment events
+                event_type = getattr(event, 'event', None)
+                if event_type != 'commented':
+                    continue
+                
+                body = getattr(event, 'body', '') or ''
+                created_at = getattr(event, 'created_at', None)
+                
+                # Normalize timezone
+                if created_at and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                # Check for Copilot work events (case-insensitive)
+                body_lower = body.lower()
+                if 'copilot started work' in body_lower:
+                    copilot_start = created_at
+                    self.logger.debug(f"PR #{pr.number}: Found Copilot start event at {created_at}")
+                    
+                elif 'copilot finished work' in body_lower:
+                    copilot_finish = created_at
+                    self.logger.debug(f"PR #{pr.number}: Found Copilot finish event at {created_at}")
+                    
+                elif 'copilot stopped work' in body_lower and 'error' in body_lower:
+                    copilot_error = body[:500]  # Truncate long error messages
+                    copilot_error_time = created_at
+                    self.logger.debug(f"PR #{pr.number}: Found Copilot error event at {created_at}")
+            
+            # Determine if Copilot is currently working
+            # Working = started but not finished/errored (or finish/error is before start)
+            is_working = False
+            if copilot_start:
+                # Check if there's a more recent finish/error
+                if copilot_finish and copilot_finish > copilot_start:
+                    is_working = False  # Finished after starting
+                elif copilot_error_time and copilot_error_time > copilot_start:
+                    is_working = False  # Stopped with error after starting  
+                else:
+                    is_working = True  # Started but not finished/errored
+            
+            result = {
+                'is_working': is_working,
+                'last_start': copilot_start,
+                'last_finish': copilot_finish,
+                'last_error': copilot_error,
+                'error_time': copilot_error_time
+            }
+            
+            if is_working or copilot_error:
+                self.logger.info(f"PR #{pr.number}: Copilot work status: is_working={is_working}, "
+                               f"last_start={copilot_start}, last_finish={copilot_finish}, error={bool(copilot_error)}")
+            return result
+            
+        except Exception as exc:
+            self.logger.warning(f"Failed to check Copilot work status for PR #{pr.number}: {exc}")
+            return {
+                'is_working': False,
+                'last_start': None,
+                'last_finish': None,
+                'last_error': None,
+                'error_time': None
+            }
+
     def _collect_pr_metadata(self, pr) -> Dict[str, Any]:
         """Collect key PR metadata needed for state classification."""
 
@@ -1183,6 +1265,9 @@ class JediMaster:
         except Exception as exc:
             self.logger.debug(f"Failed to load labels for PR #{metadata['number']}: {exc}")
         metadata['labels'] = labels
+
+        # Get Copilot work status from timeline events
+        metadata['copilot_work_status'] = self._get_copilot_work_status(pr)
 
         requested_users = []
         try:
@@ -1321,9 +1406,36 @@ class JediMaster:
         review_decision = metadata.get('review_decision')
         last_commit_time = metadata.get('last_commit_time')
         requested_reviewers = metadata.get('requested_reviewers', [])
+        
+        # Get Copilot work status from timeline
+        copilot_work = metadata.get('copilot_work_status', {})
+        is_copilot_working = copilot_work.get('is_working', False)
+        copilot_error = copilot_work.get('last_error')
 
         if metadata.get('merged') or metadata.get('state') == 'closed':
             return {'state': STATE_DONE, 'reason': 'pr_closed'}
+
+        # If Copilot is actively working, don't interrupt
+        if is_copilot_working:
+            self.logger.info(f"PR #{pr.number}: Copilot is actively working, state=changes_requested")
+            return {'state': STATE_CHANGES_REQUESTED, 'reason': 'copilot_working'}
+        
+        # If Copilot stopped with an error, handle it
+        if copilot_error:
+            error_lower = copilot_error.lower()
+            if 'rate limit' in error_lower:
+                self.logger.info(f"PR #{pr.number}: Copilot hit rate limit, waiting")
+                return {'state': STATE_CHANGES_REQUESTED, 'reason': 'rate_limit_wait'}
+            else:
+                # Other errors - escalate to human
+                self.logger.warning(f"PR #{pr.number}: Copilot error detected, escalating")
+                return {'state': STATE_BLOCKED, 'reason': 'copilot_error'}
+
+        # Check for draft PRs where Copilot finished but PR still draft
+        if is_draft and copilot_work.get('last_finish'):
+            # Copilot finished but PR is still draft - needs human to mark ready
+            self.logger.info(f"PR #{pr.number}: Copilot finished but still draft, needs review")
+            return {'state': STATE_PENDING_REVIEW, 'reason': 'copilot_finished_needs_ready'}
 
         # Check if there are explicit review requests - these take priority over change requests
         # This handles the case where Copilot pushes changes and re-requests review

@@ -101,56 +101,57 @@ class ResourceMonitor:
         )
     
     def _is_copilot_actively_working(self, pr) -> bool:
-        """Check if Copilot is actively working on a PR.
+        """Check if Copilot is actively working on a PR using timeline events.
         
-        Copilot is considered actively working if:
-        1. The PR is in draft state (Copilot hasn't requested review yet)
-        2. There was a recent comment mentioning @copilot (review feedback or merge conflict)
-        3. The most recent comment is from Copilot (responding to feedback)
+        Copilot is considered actively working if timeline shows:
+        - "Copilot started work" without a corresponding "finished" or "stopped"
+        
+        Falls back to draft status if timeline unavailable.
         
         Returns:
             bool: True if Copilot is actively working, False otherwise
         """
         try:
-            # If PR is draft, Copilot is still working on it
-            if pr.draft:
-                return True
+            # Use timeline events to check for Copilot work status
+            timeline = pr.as_issue().get_timeline()
             
-            # Check recent comments to see if Copilot is being asked to work or responding
-            comments = list(pr.get_issue_comments())
-            if not comments:
-                # No comments yet, if it's draft=False and ready for review, not actively working
-                return False
+            copilot_start = None
+            copilot_finish = None
+            copilot_stop = None
             
-            # Get the most recent comment
-            last_comment = comments[-1]
-            last_comment_author = last_comment.user.login if last_comment.user else ''
-            last_comment_body = last_comment.body or ''
+            for event in timeline:
+                event_type = getattr(event, 'event', None)
+                if event_type != 'commented':
+                    continue
+                
+                body = getattr(event, 'body', '') or ''
+                created_at = getattr(event, 'created_at', None)
+                body_lower = body.lower()
+                
+                if 'copilot started work' in body_lower:
+                    copilot_start = created_at
+                elif 'copilot finished work' in body_lower:
+                    copilot_finish = created_at
+                elif 'copilot stopped work' in body_lower:
+                    copilot_stop = created_at
             
-            # Check if last comment is from Copilot (responding to feedback)
-            if 'copilot' in last_comment_author.lower():
-                return True
+            # If we found start/finish events, use them
+            if copilot_start:
+                # Check if there's a more recent finish/stop
+                if copilot_finish and copilot_finish > copilot_start:
+                    return False  # Finished after starting
+                if copilot_stop and copilot_stop > copilot_start:
+                    return False  # Stopped after starting
+                return True  # Started but not finished/stopped
             
-            # Check if last comment mentions @copilot (asking for work)
-            if '@copilot' in last_comment_body.lower():
-                return True
-            
-            # Check if there's a recent review comment (last few comments)
-            # Look at last 3 comments to see if there's ongoing review discussion
-            recent_comments = comments[-3:]
-            for comment in recent_comments:
-                body = comment.body or ''
-                # Check for review-related markers
-                if '@copilot' in body.lower():
-                    return True
-                # Check if it's a review comment from our system
-                if '[copilot:' in body.lower() or 'review feedback' in body.lower():
-                    return True
-            
-            # If none of the above, Copilot is not actively working
-            return False
+            # Fallback: If PR is draft, assume Copilot is working
+            return pr.draft
             
         except Exception as e:
             self.logger.warning(f"Failed to check if Copilot is working on PR #{pr.number}: {e}")
-            # Default to True (assume working) to be conservative with capacity
-            return True
+            # Default to draft status as fallback
+            try:
+                return pr.draft
+            except:
+                # Conservative: assume working to avoid over-assignment
+                return True
