@@ -24,13 +24,27 @@ from agents.analytical import RepoStateAnalyzer, ResourceMonitor, WorkloadPriori
 class OrchestratorAgent:
     """LLM-based strategic planner for repository automation."""
     
-    def __init__(self, github: Github, azure_foundry_endpoint: str, model: str = None, enable_issue_creation: bool = False):
+    def __init__(self, github: Github, azure_foundry_endpoint: str, model: str = None, enable_issue_creation: bool = False, github_token: str = None):
         self.github = github
+        self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.enable_issue_creation = enable_issue_creation
         self.logger = logging.getLogger('jedimaster.orchestrator')
         self._credential: Optional[DefaultAzureCredential] = None
+        
+        # Log masked token for verification if provided
+        if github_token:
+            token_length = len(github_token)
+            if token_length > 10:
+                masked_token = github_token[:6] + "*" * (token_length - 10) + github_token[-4:]
+            elif token_length > 4:
+                masked_token = "*" * (token_length - 4) + github_token[-4:]
+            else:
+                masked_token = "*" * token_length
+            self.logger.info(f"[OrchestratorAgent] Using GitHub token: {masked_token} (length: {token_length})")
+        else:
+            self.logger.warning("[OrchestratorAgent] No GitHub token provided for logging")
         
         # Initialize analytical agents
         self.state_analyzer = RepoStateAnalyzer(github)
@@ -52,17 +66,17 @@ class OrchestratorAgent:
 Your goal is to reduce the number of open issues and PRs efficiently while respecting constraints.
 
 IMPORTANT PRINCIPLES:
-1. Copilot capacity is based ONLY on ACTIVE PRs, not assigned issues
+1. Copilot capacity is LIMITED TO 10 ACTIVE PRs MAXIMUM
    - Assigning issues to Copilot creates PRs; only the PRs consume capacity
    - Track active PRs to determine if Copilot is overloaded
+   - NEVER assign more issues if Copilot is already at or near capacity (>8 PRs)
 2. The ONLY stuck state is when a PR exceeded MERGE_MAX_RETRIES
-3. Quick wins first: ALWAYS merge ready PRs before anything else
-4. Process existing issues aggressively when backlog is high
-   - Don't skip process_issues when there are many unprocessed issues
-   - Use larger batch sizes for process_issues when resources allow
-5. Respect Copilot capacity: Don't overwhelm it with too many simultaneous PRs
-6. Conserve API quota: Prioritize high-value, low-cost work
-7. Only skip CREATING new issues when backlog is high (>20 items)
+3. Quick wins first: ALWAYS merge ready PRs before anything else (this FREES Copilot capacity!)
+4. Process existing issues ONLY when Copilot has capacity
+   - Don't assign issues if Copilot already has 8+ active PRs
+   - Use batch sizes that respect available Copilot slots
+5. Conserve API quota: Prioritize high-value, low-cost work
+6. Only skip CREATING new issues when backlog is high (>20 items)
 
 You will receive:
 - Repository state (issue counts, PR counts by state)
@@ -73,13 +87,13 @@ Available workflows:
 {chr(10).join(available_workflows)}
 
 STRATEGIC RULES:
-1. If Copilot at capacity (too many active PRs) → focus on clearing PRs first
+1. If Copilot at capacity (≥8 active PRs) → ONLY merge ready PRs and flag blocked, DO NOT assign new issues
 2. If API quota low (<10% remaining) → only merge ready PRs, skip everything else
-3. If many unprocessed issues exist → INCREASE batch size for process_issues workflow
-4. If backlog >20 items → skip CREATING new issues (but DO process existing ones)
+3. If Copilot has capacity (<8 PRs) AND unprocessed issues exist → assign issues up to available capacity
+4. If backlog >20 items → skip CREATING new issues (but DO process existing ones if capacity allows)
 5. If blocked PRs exist → flag them for humans
-6. Adapt batch sizes to available resources
-{"7. Issue creation is ENABLED - only create if backlog is healthy" if self.enable_issue_creation else "7. Issue creation is DISABLED - do not include create_issues in workflows"}
+6. Adapt batch sizes to BOTH API quota AND Copilot capacity (use the smaller limit)
+{"7. Issue creation is ENABLED - only create if backlog is healthy AND Copilot has capacity" if self.enable_issue_creation else "7. Issue creation is DISABLED - do not include create_issues in workflows"}
 
 Return ONLY valid JSON matching this schema:
 {{
@@ -200,27 +214,26 @@ Copilot active work: {repo_state.copilot_active_prs} PRs in flight
 RESOURCE CONSTRAINTS:
 - GitHub API: {resource_state.github_api_remaining}/{resource_state.github_api_limit} calls available
 - Estimated budget: Can safely process ~{resource_state.estimated_api_budget} items
-- Copilot Capacity: {resource_state.copilot_active_prs}/{resource_state.copilot_max_concurrent} active PRs
-- Copilot Available slots: {resource_state.copilot_available_slots}
+- Copilot Capacity: {resource_state.copilot_active_prs}/{resource_state.copilot_max_concurrent} active PRs (LIMIT: 10)
+- Copilot Available slots: {resource_state.copilot_available_slots} {"← CAN ASSIGN MORE ISSUES" if resource_state.copilot_available_slots > 0 else "← AT CAPACITY, DO NOT ASSIGN MORE ISSUES"}
 - Warnings: {', '.join(resource_state.warnings) if resource_state.warnings else 'None'}
 
 PRIORITIZED WORKLOAD:
-- Quick wins available: {len(workload.quick_wins)} PRs ready to merge
+- Quick wins available: {len(workload.quick_wins)} PRs ready to merge ← MERGE THESE FIRST TO FREE COPILOT!
 - Blocked PRs needing attention: {len(workload.blocked_prs)}
 - PRs pending review: {len(workload.pending_review_prs)}
 - PRs with changes requested: {len(workload.changes_requested_prs)}
   NOTE: The review_prs workflow will process BOTH pending_review and changes_requested PRs
-- Unprocessed issues: {len(workload.unprocessed_issues)}
+- Unprocessed issues: {len(workload.unprocessed_issues)} {"← CAN ASSIGN UP TO " + str(resource_state.copilot_available_slots) if resource_state.copilot_available_slots > 0 else "← CANNOT ASSIGN (Copilot at capacity)"}
 
 Create an optimal execution plan. Remember:
-1. ALWAYS merge ready PRs first (instant wins, no LLM cost, frees Copilot)
-2. Copilot capacity ({resource_state.copilot_available_slots} slots) is based on ACTIVE PRs only
-3. Assigning issues creates PRs which then consume Copilot capacity
-4. When many unprocessed issues exist → PROCESS THEM (use larger batch sizes if resources allow)
+1. ALWAYS merge ready PRs first (instant wins, no LLM cost, FREES Copilot capacity!)
+2. Copilot has MAX 10 PR limit - currently {resource_state.copilot_available_slots} slots available
+3. Assigning issues creates PRs which consume Copilot capacity - DO NOT exceed limit!
+4. If Copilot at/near capacity (≥8 PRs) → ONLY merge/review PRs, DO NOT assign new issues
 5. If API quota low → prioritize high-value, low-cost work
-6. If backlog >{20} items → skip CREATING NEW issues (but still process existing ones)
-7. If blocked PRs exist → flag them for humans
-8. Respect API budget and Copilot capacity when setting batch sizes
+6. If blocked PRs exist → flag them for humans
+7. Respect BOTH API budget AND Copilot capacity when setting batch sizes (use the smaller limit)
 
 Return your plan as JSON."""
     
@@ -228,7 +241,7 @@ Return your plan as JSON."""
         """Create a safe fallback plan if LLM fails."""
         workflows = []
         
-        # Always try to merge ready PRs
+        # Always try to merge ready PRs (frees up Copilot capacity!)
         if repo_state.prs_ready_to_merge > 0:
             workflows.append(WorkflowStep(
                 name='merge_ready_prs',
@@ -254,16 +267,18 @@ Return your plan as JSON."""
                     reasoning='Fallback: review small batch of PRs to make progress'
                 ))
             
-            # Process issues if any exist (capacity based on PRs, not issues)
-            if repo_state.open_issues_unprocessed > 0:
+            # Process issues ONLY if Copilot has capacity (respect 10 PR limit)
+            if repo_state.open_issues_unprocessed > 0 and resource_state.copilot_available_slots > 0:
+                # Conservative: only assign up to half available capacity in fallback mode
+                max_assign = max(1, resource_state.copilot_available_slots // 2)
                 workflows.append(WorkflowStep(
                     name='process_issues',
-                    batch_size=min(repo_state.open_issues_unprocessed, 3),
-                    reasoning='Fallback: process small batch of issues'
+                    batch_size=min(repo_state.open_issues_unprocessed, max_assign, 3),
+                    reasoning=f'Fallback: process small batch of issues (Copilot has {resource_state.copilot_available_slots} slots)'
                 ))
         
         return ExecutionPlan(
-            strategy="Fallback plan: LLM unavailable, using conservative defaults",
+            strategy="Fallback plan: LLM unavailable, using conservative defaults with Copilot capacity limits",
             workflows=workflows,
             skip_workflows=['create_issues'],
             estimated_api_calls=50,

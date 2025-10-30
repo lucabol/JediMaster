@@ -91,7 +91,7 @@ class ResourceMonitor:
         copilot_active_prs = self._count_copilot_active_prs(repo)
         
         # Copilot capacity (max concurrent PRs it can work on)
-        copilot_max = 5  # Conservative estimate
+        copilot_max = 10  # Limit to prevent overloading Copilot and hitting rate limits
         copilot_available = max(0, copilot_max - copilot_active_prs)
         
         # Estimate API budget

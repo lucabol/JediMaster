@@ -1792,6 +1792,17 @@ class JediMaster:
         self.manage_prs = manage_prs
         self.verbose = verbose
         self.logger = self._setup_logger()
+        
+        # Log masked token for verification
+        token_length = len(github_token)
+        if token_length > 10:
+            masked_token = github_token[:6] + "*" * (token_length - 10) + github_token[-4:]
+        elif token_length > 4:
+            masked_token = "*" * (token_length - 4) + github_token[-4:]
+        else:
+            masked_token = "*" * token_length
+        self.logger.info(f"[JediMaster] Using GitHub token: {masked_token} (length: {token_length})")
+        
         # Get merge retry limit from environment
         self.merge_max_retries = self._get_merge_max_retries()
         # Agents will be initialized in async context managers
@@ -2154,7 +2165,8 @@ class JediMaster:
             github=self.github,
             azure_foundry_endpoint=self.azure_foundry_endpoint,
             model=None,  # Will use AZURE_AI_MODEL env var
-            enable_issue_creation=enable_issue_creation
+            enable_issue_creation=enable_issue_creation,
+            github_token=self.github_token
         ) as orchestrator:
             
             # Step 1: Analyze repository state (fast, no LLM)
@@ -2182,9 +2194,18 @@ class JediMaster:
             self.logger.info("[Orchestrator] Executing workflows...")
             workflow_results = []
             
+            # Track Copilot capacity dynamically during execution
+            copilot_capacity_tracker = initial_resources.copilot_available_slots
+            
             for workflow in plan.workflows:
-                result = await self._execute_workflow(repo_name, workflow, workload)
+                result = await self._execute_workflow(repo_name, workflow, workload, copilot_capacity_tracker)
                 workflow_results.append(result)
+                
+                # Update capacity tracker if we assigned issues (which create PRs)
+                if workflow.name == 'process_issues' and result.success:
+                    assigned_count = result.items_succeeded
+                    copilot_capacity_tracker = max(0, copilot_capacity_tracker - assigned_count)
+                    self.logger.info(f"[Orchestrator] Copilot capacity reduced by {assigned_count}, now {copilot_capacity_tracker} slots available")
             
             # Step 4: Final analysis
             self.logger.info("[Orchestrator] Collecting final metrics...")
@@ -2216,7 +2237,7 @@ class JediMaster:
                 health_score_after=health_after
             )
     
-    async def _execute_workflow(self, repo_name: str, workflow: 'WorkflowStep', workload: 'PrioritizedWorkload') -> 'WorkflowResult':
+    async def _execute_workflow(self, repo_name: str, workflow: 'WorkflowStep', workload: 'PrioritizedWorkload', copilot_available_slots: int = None) -> 'WorkflowResult':
         """Execute a single workflow step."""
         from core.models import WorkflowResult
         import time
@@ -2270,7 +2291,24 @@ class JediMaster:
             
             elif workflow.name == 'process_issues':
                 # Process issues (uses DeciderAgent LLM)
-                issue_numbers = workload.unprocessed_issues[:workflow.batch_size]
+                # Limit batch size by Copilot capacity to prevent overload
+                effective_batch_size = workflow.batch_size
+                if copilot_available_slots is not None:
+                    if copilot_available_slots <= 0:
+                        self.logger.warning(f"[Orchestrator] Skipping process_issues: No Copilot capacity available")
+                        return WorkflowResult(
+                            workflow_name=workflow.name,
+                            success=True,
+                            items_processed=0,
+                            items_succeeded=0,
+                            items_failed=0,
+                            duration_seconds=0,
+                            details=[]
+                        )
+                    effective_batch_size = min(workflow.batch_size, copilot_available_slots)
+                    self.logger.info(f"[Orchestrator] Limiting process_issues batch from {workflow.batch_size} to {effective_batch_size} based on Copilot capacity")
+                
+                issue_numbers = workload.unprocessed_issues[:effective_batch_size]
                 results = await self._execute_issue_workflow(repo_name, issue_numbers)
                 return WorkflowResult(
                     workflow_name=workflow.name,
