@@ -652,10 +652,18 @@ class JediMaster:
         copilot_status = self._get_copilot_work_status(pr)
         if copilot_status.get('last_error'):
             # Copilot encountered an error, check if we should retry or escalate
+            error_msg = copilot_status.get('last_error', 'Unknown error')
+            error_time = copilot_status.get('error_time')
+            self.logger.info(f"PR #{pr.number}: Detected Copilot error at {error_time}: {error_msg[:100]}")
+            
             total_comments = self._count_total_comments(pr)
             
             if total_comments > self.max_comments:
                 # Too many retries, escalate to human
+                self.logger.warning(
+                    f"PR #{pr.number}: Escalating to human - Copilot error with too many comments "
+                    f"({total_comments} > {self.max_comments})"
+                )
                 if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
                     pr.add_to_labels(HUMAN_ESCALATION_LABEL)
                     error_msg = copilot_status.get('last_error', 'Unknown error')[:200]
@@ -692,8 +700,12 @@ class JediMaster:
                     return results
                 
                 # Retry by reassigning to Copilot
-                error_msg = copilot_status.get('last_error', 'Unknown error')[:200]
-                pr.create_comment(f"@copilot Please retry this PR. Previous error: {error_msg}")
+                error_msg_short = copilot_status.get('last_error', 'Unknown error')[:200]
+                self.logger.info(
+                    f"PR #{pr.number}: Retrying after Copilot error (comments: {total_comments}/{self.max_comments}, "
+                    f"Copilot slots: {copilot_slots_tracker.get('used', 0) if copilot_slots_tracker else 'N/A'}/{MAX_COPILOT_SLOTS})"
+                )
+                pr.create_comment(f"@copilot Please retry this PR. Previous error: {error_msg_short}")
                 
                 # Count this as a new Copilot request
                 if copilot_slots_tracker is not None:
@@ -1019,7 +1031,9 @@ class JediMaster:
             Tuple of (results list, active copilot count)
         """
         results: List[PRRunResult] = []
-        active_copilot_count = 0
+        
+        # Initialize Copilot slot tracker
+        copilot_slots_tracker = {'used': 0}
         
         try:
             repo = self.github.get_repo(repo_name)
@@ -1043,20 +1057,9 @@ class JediMaster:
             all_prs = ready_prs + draft_prs
             print(f"\nProcessing {len(all_prs)} open PRs ({len(ready_prs)} ready, {len(draft_prs)} draft):")
             for pr in all_prs:
-                pr_results = await self._process_pr_state_machine(pr)
+                # Pass the tracker so it can count active work and new assignments
+                pr_results = await self._process_pr_state_machine(pr, copilot_slots_tracker)
                 results.extend(pr_results)
-                
-                # Count this PR as active if:
-                # 1. Copilot is actively working on it (based on timeline events)
-                # 2. We just reassigned it to Copilot (rate limited, changes requested, etc.)
-                if self._is_copilot_actively_working(pr.number, repo):
-                    active_copilot_count += 1
-                else:
-                    # Check if we just reassigned it in this run
-                    for pr_result in pr_results:
-                        if pr_result.pr_number == pr.number and pr_result.action in ['reassign', 'changes_requested']:
-                            active_copilot_count += 1
-                            break
                             
         except Exception as exc:
             if self.verbose:
@@ -1071,7 +1074,9 @@ class JediMaster:
                     action='manage_failure',
                 )
             )
-        return results, active_copilot_count
+        
+        # Return results and the count of active/assigned Copilot slots
+        return results, copilot_slots_tracker['used']
 
     # Helper methods for state machine
 
@@ -1487,17 +1492,29 @@ class JediMaster:
 
             for event in timeline:
                 event_type = getattr(event, 'event', None)
+                created_at = getattr(event, 'created_at', None)
                 
-                # Check for comment events
-                if event_type == 'commented':
+                # Normalize timezone
+                if created_at and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                # Check for Copilot work start/finish timeline events
+                if event_type == 'copilot_work_started':
+                    copilot_start = created_at
+                elif event_type == 'copilot_work_finished':
+                    copilot_finish = created_at
+                elif event_type == 'copilot_work_finished_failure':
+                    # This is the critical event for detecting Copilot errors
+                    copilot_error = f"Copilot work finished with failure at {created_at}"
+                    copilot_error_time = created_at
+                    # Also treat this as a finish event
+                    copilot_finish = created_at
+                
+                # Check for comment events (legacy detection)
+                elif event_type == 'commented':
                     body = getattr(event, 'body', '') or ''
-                    created_at = getattr(event, 'created_at', None)
 
-                    # Normalize timezone
-                    if created_at and created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=timezone.utc)
-
-                    # Check for Copilot work events (case-insensitive)
+                    # Check for Copilot work events in comments (case-insensitive)
                     body_lower = body.lower()
                     if 'copilot started work' in body_lower:
                         copilot_start = created_at
@@ -1519,7 +1536,7 @@ class JediMaster:
                             if 'copilot' in name.lower():
                                 commit_date = getattr(commit, 'author', {}).get('date') if hasattr(getattr(commit, 'author', None), 'get') else None
                                 if not commit_date:
-                                    commit_date = getattr(event, 'created_at', None)
+                                    commit_date = created_at
                                 if commit_date and commit_date.tzinfo is None:
                                     commit_date = commit_date.replace(tzinfo=timezone.utc)
                                 last_copilot_commit = commit_date

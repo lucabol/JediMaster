@@ -206,3 +206,41 @@ PR_BATCH_SIZE=15  # Existing
 - Number of concurrent active Copilot PRs
 - Success rate after recovery attempts
 - Number of PRs escalated due to max retries
+
+---
+
+## Update: copilot_work_finished_failure Detection (2025-11-03)
+
+### Issue Fixed
+PR #830 in gim-home/JediTestRepoV3 was closed with unmerged commits because the system didn't detect the `copilot_work_finished_failure` timeline event.
+
+### Root Cause
+The `_get_copilot_work_status()` method only checked for comment-based error indicators but missed the actual GitHub timeline event type `copilot_work_finished_failure`.
+
+### Solution
+Enhanced the method to detect the timeline event:
+
+```python
+elif event_type == 'copilot_work_finished_failure':
+    copilot_error = f"Copilot work finished with failure at {created_at}"
+    copilot_error_time = created_at
+    copilot_finish = created_at
+```
+
+### Behavior
+When `copilot_work_finished_failure` is detected:
+1. Check comment count against MAX_COMMENTS (default: 10)
+2. If under limit: Post `@copilot` retry comment and increment slot counter
+3. If over limit: Add `copilot-human-review` label and escalate
+
+### Enhanced Logging
+Added detailed logging:
+- "Detected Copilot error at {time}: {error}"
+- "Retrying after Copilot error (comments: X/Y, slots: A/B)"
+- "Escalating to human - Copilot error with too many comments"
+
+### Impact
+- No more stuck PRs due to undetected Copilot errors
+- Automatic retry for transient failures
+- Clear escalation path for persistent errors
+- Better debugging via enhanced logs
