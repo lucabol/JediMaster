@@ -176,33 +176,81 @@ class ResourceMonitor:
 
 class WorkloadPrioritizer:
     """Prioritizes work items based on impact and cost."""
-    
+
     def __init__(self, github: Github):
         self.github = github
         self.logger = logging.getLogger('jedimaster.orchestrator.workload_prioritizer')
     
+    def _is_copilot_working(self, pr) -> bool:
+        """Check if Copilot is actively working on a PR by examining timeline."""
+        try:
+            timeline = pr.as_issue().get_timeline()
+            
+            copilot_start = None
+            copilot_finish = None
+            copilot_error_time = None
+            
+            for event in timeline:
+                event_type = getattr(event, 'event', None)
+                if event_type != 'commented':
+                    continue
+                
+                body = getattr(event, 'body', '') or ''
+                created_at = getattr(event, 'created_at', None)
+                
+                if created_at and created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                body_lower = body.lower()
+                if 'copilot started work' in body_lower:
+                    copilot_start = created_at
+                elif 'copilot finished work' in body_lower:
+                    copilot_finish = created_at
+                elif 'copilot stopped work' in body_lower and 'error' in body_lower:
+                    copilot_error_time = created_at
+            
+            # Working if started but not finished/errored
+            if copilot_start:
+                if copilot_finish and copilot_finish > copilot_start:
+                    return False
+                elif copilot_error_time and copilot_error_time > copilot_start:
+                    return False
+                else:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.debug(f"Error checking Copilot work status for PR #{pr.number}: {e}")
+            return False
+
     def prioritize(self, repo_name: str, state: RepoState) -> PrioritizedWorkload:
         """Prioritize work items for execution."""
         repo = self.github.get_repo(repo_name)
-        
+
         quick_wins = []
         blocked_prs = []
         pending_review_prs = []
         changes_requested_prs = []
         unprocessed_issues = []
-        
+
         # Categorize all items
         all_items = list(repo.get_issues(state='open'))
-        
+
         for item in all_items:
             if item.pull_request:
                 # It's a PR - fetch full PR details to check draft status and review requests
                 try:
                     pr = repo.get_pull(item.number)
                     labels = {label.name for label in pr.labels}
-                    
+
                     self.logger.info(f"Categorizing PR #{item.number}: draft={pr.draft}, labels={labels}")
                     
+                    # Skip PRs where Copilot is actively working
+                    if self._is_copilot_working(pr):
+                        self.logger.info(f"  -> SKIP (Copilot actively working)")
+                        continue
+
                     if 'copilot-state:blocked' in labels:
                         blocked_prs.append(item.number)
                         self.logger.info(f"  -> blocked_prs")
