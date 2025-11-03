@@ -82,6 +82,7 @@ STATE_PENDING_REVIEW = "pending-review"
 STATE_CHANGES_REQUESTED = "changes-requested"  
 STATE_READY_TO_MERGE = "ready-to-merge"
 STATE_BLOCKED = "blocked"
+STATE_DONE = "done"
 
 # State label color palette
 COPILOT_LABEL_PALETTE = {
@@ -293,11 +294,7 @@ class JediMaster:
         return results
 
     async def _handle_changes_requested_state(self, pr, metadata: Dict[str, Any], classification: Optional[Dict[str, Any]] = None) -> List[PRRunResult]:
-        """Handler for changes_requested state.
-        
-        Now also handles:
-        - draft_in_progress (Copilot working on draft PR)
-        """
+        """Handler for changes_requested state."""
         repo_full = pr.base.repo.full_name
         results: List[PRRunResult] = []
         reason = (classification or {}).get('reason', 'awaiting_author')
@@ -319,20 +316,14 @@ class JediMaster:
             )
             return results
         
-        # Handle different reasons for changes_requested
-        if reason == 'draft_in_progress':
-            message = "Draft PR in progress. Copilot is working on this. Mark as ready for review when complete."
-            tag = 'copilot:draft-in-progress'
-            details = 'Draft PR - Copilot working'
-        else:
-            # Changes requested by any reviewer (Copilot or human)
-            # Find who requested changes
-            latest_change_requester = None
-            latest_change_time = None
-            for reviewer in metadata.get('latest_reviews', {}).values():
-                if reviewer['state'] == 'CHANGES_REQUESTED':
-                    review_time = reviewer.get('submitted_at')
-                    if latest_change_time is None or (review_time and review_time > latest_change_time):
+        # Changes requested by any reviewer (Copilot or human)
+        # Find who requested changes
+        latest_change_requester = None
+        latest_change_time = None
+        for reviewer in metadata.get('latest_reviews', {}).values():
+            if reviewer['state'] == 'CHANGES_REQUESTED':
+                review_time = reviewer.get('submitted_at')
+                if latest_change_time is None or (review_time and review_time > latest_change_time):
                         latest_change_requester = reviewer['login']
                         latest_change_time = review_time
             
@@ -341,8 +332,8 @@ class JediMaster:
                 message = f"Waiting for updates after {latest_change_requester} requested changes on {review_iso}. Push new commits when ready."
             else:
                 message = "Waiting for updates after reviewer requested changes. Push new commits when ready."
-            tag = 'copilot:awaiting-updates'
-            details = 'Awaiting author updates'
+        tag = 'copilot:awaiting-updates'
+        details = 'Awaiting author updates'
 
         self._ensure_comment_with_tag(pr, tag, message)
         results.append(
@@ -409,35 +400,6 @@ class JediMaster:
                 )
             )
             return results
-
-        if self.verbose:
-            self.logger.info(f"PR #{pr.number} ready to merge - checking draft status")
-        if metadata.get('is_draft'):
-            if self.verbose:
-                self.logger.info(f"PR #{pr.number} is a draft, marking as ready for review")
-            if not self._mark_pr_ready_for_review(pr):
-                self.logger.error(f"Failed to mark PR #{pr.number} as ready - cannot merge")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='merge_error',
-                        details='Failed to convert from draft to ready for review',
-                        state_before=STATE_READY_TO_MERGE,
-                        state_after=STATE_BLOCKED,
-                        action='draft_conversion_failed',
-                    )
-                )
-                return results
-            # Force refresh the PR to get updated draft status
-            try:
-                repo = pr.base.repo
-                pr = repo.get_pull(pr.number)
-                if self.verbose:
-                    self.logger.info(f"PR #{pr.number} refreshed, new draft status: {pr.draft}")
-            except Exception as exc:
-                self.logger.error(f"Failed to refresh PR #{pr.number} after marking ready: {exc}")
 
         attempt = self._increment_merge_attempt_count(pr)
         try:
@@ -598,6 +560,13 @@ class JediMaster:
         repo_full = pr.base.repo.full_name
         repo = pr.base.repo
 
+        # Fetch timeline once for all checks (expensive operation)
+        try:
+            timeline = list(pr.as_issue().get_timeline())
+        except Exception as e:
+            self.logger.error(f"Failed to fetch timeline for PR #{pr.number}: {e}")
+            timeline = []
+
         # Skip PRs without Copilot assigned
         assignees = list(pr.assignees) if hasattr(pr, 'assignees') else []
         has_copilot_assigned = any('copilot' in assignee.login.lower() for assignee in assignees)
@@ -630,8 +599,8 @@ class JediMaster:
             )
             return results
 
-        # Skip if Copilot is actively working
-        if self._is_copilot_actively_working(pr.number, repo):
+        # Skip if Copilot is actively working (pass timeline to avoid refetch)
+        if self._is_copilot_actively_working(pr, timeline=timeline):
             # Count this as one slot being used
             if copilot_slots_tracker is not None:
                 copilot_slots_tracker['used'] += 1
@@ -648,8 +617,8 @@ class JediMaster:
             )
             return results
 
-        # Check if Copilot hit an error - if so, reassign to retry
-        copilot_status = self._get_copilot_work_status(pr)
+        # Check if Copilot hit an error - if so, reassign to retry (pass timeline)
+        copilot_status = self._get_copilot_work_status(pr, timeline=timeline)
         if copilot_status.get('last_error'):
             # Copilot encountered an error, check if we should retry or escalate
             error_msg = copilot_status.get('last_error', 'Unknown error')
@@ -1039,24 +1008,12 @@ class JediMaster:
             repo = self.github.get_repo(repo_name)
             pulls = list(repo.get_pulls(state='open'))
             
-            # Separate into ready (non-draft) and draft PRs - prioritize ready ones
-            ready_prs = [pr for pr in pulls if not getattr(pr, 'draft', False)]
-            draft_prs = [pr for pr in pulls if getattr(pr, 'draft', False)]
-            
-            # Apply batch size limit across both categories
+            # Apply batch size limit
             if batch_size:
-                total_ready = min(len(ready_prs), batch_size)
-                ready_prs = ready_prs[:total_ready]
-                remaining_batch = batch_size - total_ready
-                if remaining_batch > 0:
-                    draft_prs = draft_prs[:remaining_batch]
-                else:
-                    draft_prs = []
+                pulls = pulls[:batch_size]
             
-            # Process ready PRs first, then drafts
-            all_prs = ready_prs + draft_prs
-            print(f"\nProcessing {len(all_prs)} open PRs ({len(ready_prs)} ready, {len(draft_prs)} draft):")
-            for pr in all_prs:
+            print(f"\nProcessing {len(pulls)} open PRs:")
+            for pr in pulls:
                 # Pass the tracker so it can count active work and new assignments
                 pr_results = await self._process_pr_state_machine(pr, copilot_slots_tracker)
                 results.extend(pr_results)
@@ -1232,25 +1189,28 @@ class JediMaster:
             self.logger.error(f"Error checking if PR #{pr.number} was approved by us: {exc}")
             return False
     
-    def _is_copilot_actively_working(self, pr_number: int, repo) -> bool:
+    def _is_copilot_actively_working(self, pr, timeline: List = None) -> bool:
         """
-        Check if Copilot is actively working on a PR by examining timeline comments.
+        Check if Copilot is actively working on a PR by examining timeline.
         
-        Returns True if Copilot started work but hasn't finished or stopped with error yet.
+        Args:
+            pr: The pull request object
+            timeline: Optional pre-fetched timeline (to avoid multiple API calls)
+        
+        Returns True if:
+        - Copilot started work but hasn't finished or stopped with error yet, OR
+        - Copilot was just assigned but hasn't started working yet
         """
         try:
-            # Get the PR object
-            pr = repo.get_pull(pr_number)
-            
-            # Use the existing _get_copilot_work_status which properly checks comments
-            status = self._get_copilot_work_status(pr)
+            # Use the existing _get_copilot_work_status which properly checks timeline
+            status = self._get_copilot_work_status(pr, timeline=timeline)
             result = status.get('is_working', False)
             
-            self.logger.debug(f"PR #{pr_number}: Copilot actively working = {result}")
+            self.logger.debug(f"PR #{pr.number}: Copilot actively working = {result}")
             return result
             
         except Exception as e:
-            self.logger.error(f"Error checking if Copilot is working on PR #{pr_number}: {e}")
+            self.logger.error(f"Error checking if Copilot is working on PR #{pr.number}: {e}")
             return False
 
     def _shorten_text(self, text: Optional[str], limit: int = 80) -> str:
@@ -1469,9 +1429,13 @@ class JediMaster:
         return merge_conflict_count, regular_count, participants
 
 
-    def _get_copilot_work_status(self, pr) -> Dict[str, Any]:
+    def _get_copilot_work_status(self, pr, timeline: List = None) -> Dict[str, Any]:
         """
         Analyze timeline events to determine if Copilot is actively working.
+
+        Args:
+            pr: The pull request object
+            timeline: Optional pre-fetched timeline (to avoid multiple API calls)
 
         Returns dict with:
             - is_working: bool (Copilot currently working)
@@ -1480,15 +1444,22 @@ class JediMaster:
             - last_error: str or None
             - error_time: datetime or None
             - last_commit: datetime or None
+            - last_assigned: datetime or None (when Copilot was assigned)
         """
         try:
-            timeline = pr.as_issue().get_timeline()
+            # Use provided timeline or fetch if not provided
+            if timeline is None:
+                timeline = list(pr.as_issue().get_timeline())
+            elif not isinstance(timeline, list):
+                # Convert iterator to list if needed
+                timeline = list(timeline)
 
             copilot_start = None
             copilot_finish = None
             copilot_error = None
             copilot_error_time = None
             last_copilot_commit = None
+            last_copilot_assigned = None
 
             for event in timeline:
                 event_type = getattr(event, 'event', None)
@@ -1497,6 +1468,14 @@ class JediMaster:
                 # Normalize timezone
                 if created_at and created_at.tzinfo is None:
                     created_at = created_at.replace(tzinfo=timezone.utc)
+                
+                # Check for assignment events to Copilot
+                if event_type == 'assigned':
+                    assignee = getattr(event, 'assignee', None)
+                    if assignee:
+                        assignee_login = getattr(assignee, 'login', '') or ''
+                        if 'copilot' in assignee_login.lower():
+                            last_copilot_assigned = created_at
                 
                 # Check for Copilot work start/finish timeline events
                 if event_type == 'copilot_work_started':
@@ -1543,9 +1522,20 @@ class JediMaster:
 
             # Determine if Copilot is currently working
             # Copilot is working if:
-            # 1. Started but not finished/errored (or finish/error is before start), OR
-            # 2. Made a commit in the last 30 minutes without a subsequent review
+            # 1. Assigned but not yet started (waiting to pick up), OR
+            # 2. Started but not finished/errored (or finish/error is before start), OR
+            # 3. Made a commit in the last 30 minutes without a subsequent review
             is_working = False
+            
+            # Check if Copilot was just assigned but hasn't started working yet
+            if last_copilot_assigned:
+                # If there's no start event, or assignment is more recent than start, 
+                # Copilot is about to start working
+                if not copilot_start or last_copilot_assigned > copilot_start:
+                    # Make sure there's also no finish/error after the assignment
+                    if not copilot_finish or copilot_finish < last_copilot_assigned:
+                        if not copilot_error_time or copilot_error_time < last_copilot_assigned:
+                            is_working = True  # Assigned but not yet picked up
             
             if copilot_start:
                 # Check if there's a more recent finish/error
@@ -1570,7 +1560,8 @@ class JediMaster:
                 'last_finish': copilot_finish,
                 'last_error': copilot_error,
                 'error_time': copilot_error_time,
-                'last_commit': last_copilot_commit
+                'last_commit': last_copilot_commit,
+                'last_assigned': last_copilot_assigned
             }
 
             return result
@@ -1587,15 +1578,26 @@ class JediMaster:
                 'last_commit': None
             }
 
-    def _last_timeline_is_copilot_changes_requested(self, pr) -> bool:
+    def _last_timeline_is_copilot_changes_requested(self, pr, timeline: List = None) -> bool:
         """
         Check if the last timeline item is a requested change with @copilot assignment.
         Also verifies that this review came AFTER any Copilot commits (to avoid re-reviewing
         while Copilot is still working).
+        
+        Args:
+            pr: The pull request object
+            timeline: Optional pre-fetched timeline (to avoid multiple API calls)
+        
         Returns True if we should skip this PR.
         """
         try:
-            timeline = list(pr.as_issue().get_timeline())
+            # Use provided timeline or fetch if not provided
+            if timeline is None:
+                timeline = list(pr.as_issue().get_timeline())
+            elif not isinstance(timeline, list):
+                # Convert iterator to list if needed
+                timeline = list(timeline)
+            
             if not timeline:
                 return False
             
@@ -1855,14 +1857,9 @@ class JediMaster:
                 # Other errors - escalate to human
                 return {'state': STATE_BLOCKED, 'reason': 'copilot_error'}
 
-        # Check for draft PRs where Copilot finished but PR still draft
-        if is_draft and copilot_work.get('last_finish'):
-            # Copilot finished but PR is still draft - needs human to mark ready
-            return {'state': STATE_PENDING_REVIEW, 'reason': 'copilot_finished_needs_ready'}
-
         # Check if there are explicit review requests - these take priority over change requests
         # This handles the case where Copilot pushes changes and re-requests review
-        if requested_reviewers and not is_draft:
+        if requested_reviewers:
             return {'state': STATE_PENDING_REVIEW, 'reason': 'review_requested'}
 
         # If any reviewer (Copilot or human) requested changes, check if addressed
@@ -1873,9 +1870,6 @@ class JediMaster:
                 # Changes were addressed with new commits, continue processing
                 pass
             else:
-                # If it's a draft with merge conflicts, allow Copilot to fix them
-                if is_draft and mergeable is False:
-                    return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_needs_conflict_resolution'}
                 return {'state': STATE_CHANGES_REQUESTED, 'reason': 'awaiting_author'}
 
         if (
@@ -1887,25 +1881,17 @@ class JediMaster:
 
         needs_review = False
         
-        # Check for draft PRs with human reviewers (Copilot finished and wants review)
-        if is_draft and requested_reviewers:
-            human_reviewers = [r for r in requested_reviewers if 'copilot' not in r.lower()]
-            if human_reviewers:
-                # Draft with human reviewers requested = Copilot done, needs review
-                needs_review = True
-        
         if copilot_review_requested:
-            # If Copilot review is explicitly requested, it needs review regardless of draft status
+            # If Copilot review is explicitly requested, it needs review
             needs_review = True
-        elif not is_draft and not has_current_approval and not copilot_changes_pending:
+        elif not has_current_approval and not copilot_changes_pending:
             if review_decision == 'REVIEW_REQUIRED':
                 needs_review = True
             elif review_decision == 'APPROVED' and has_new_commits:
                 needs_review = True
             elif review_decision not in ('APPROVED', 'CHANGES_REQUESTED'):
                 needs_review = True
-        elif not is_draft and has_new_commits and not has_current_approval:
-            # Special case: PR was recently changed from draft to ready (likely Copilot finished)
+        elif has_new_commits and not has_current_approval:
             # Check if there are recent commits that might indicate Copilot just finished
             if last_commit_time:
                 # If last commit was recent (within last hour), assume it needs review
@@ -1921,27 +1907,6 @@ class JediMaster:
             if copilot_review_requested:
                 reason += '_copilot_requested'
             return {'state': STATE_PENDING_REVIEW, 'reason': reason}
-
-        # Handle draft PRs - treat as work in progress, not blocked
-        if is_draft:
-            if copilot_review_requested or requested_reviewers:
-                # Draft with review requests - Copilot likely done, needs review
-                return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_ready_for_review'}
-            else:
-                # Draft in progress - Copilot should be working on it
-                # BUT if it's been sitting as a draft with changes_requested label for a while,
-                # it should move to pending_review for human intervention
-                import datetime
-                labels = metadata.get('labels', [])
-                if 'copilot-state:changes_requested' in labels:
-                    # Check if it's been sitting for a while (>1 hour for testing, should be 6 hours)
-                    if last_commit_time:
-                        time_since_commit = datetime.datetime.now(datetime.timezone.utc) - last_commit_time
-                        if time_since_commit.total_seconds() > 3600:  # 1 hour (temporary for testing)
-                            # Draft sitting too long - escalate for review
-                            return {'state': STATE_PENDING_REVIEW, 'reason': 'draft_stale_needs_review'}
-                # Still in progress
-                return {'state': STATE_CHANGES_REQUESTED, 'reason': 'draft_in_progress'}
 
         # Default to pending review instead of blocking (let human decide)
         return {'state': STATE_PENDING_REVIEW, 'reason': 'unclear_state_defaulting_to_review'}

@@ -229,7 +229,12 @@ class PRDeciderAgent:
             "- Accept PRs that are well-written, properly tested, and ready to merge\n"
             "- Request changes for PRs that need improvements, missing tests, unclear code, etc.\n"
             "- Provide specific, actionable feedback in your comments\n"
-            "- Consider code quality, completeness, and adherence to best practices"
+            "- Consider code quality, completeness, and adherence to best practices\n\n"
+            "IMPORTANT: Your response MUST be valid JSON. When providing comments:\n"
+            "- Escape all backslashes (use \\\\ instead of \\)\n"
+            "- Escape all quotes (use \\\" inside strings)\n"
+            "- Escape all control characters (newlines as \\n, tabs as \\t)\n"
+            "- Use only valid JSON string escape sequences"
         )
 
     async def __aenter__(self):
@@ -312,7 +317,23 @@ class PRDeciderAgent:
             # Use helper method to run agent
             result_text = await self._run_agent("PRDeciderAgent", prompt)
             
-            parsed_result = json.loads(result_text)
+            # Try to parse as-is first
+            try:
+                parsed_result = json.loads(result_text)
+            except json.JSONDecodeError as e:
+                # If parsing fails, try to extract JSON from response
+                # Sometimes LLM wraps JSON in markdown code blocks
+                self.logger.warning(f"Initial JSON parse failed: {e}. Attempting to extract JSON...")
+                
+                # Try to find JSON object in the response
+                import re
+                json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+                if json_match:
+                    result_text = json_match.group(0)
+                    parsed_result = json.loads(result_text)
+                else:
+                    raise
+            
             self.logger.debug(f"Parsed agent response: {parsed_result}")
             
             if not (("decision" in parsed_result and parsed_result["decision"] == "accept") or "comment" in parsed_result):
@@ -323,9 +344,9 @@ class PRDeciderAgent:
                 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse agent response as JSON: {e}")
-            self.logger.error(f"Raw response that failed to parse: {result_text}")
+            self.logger.error(f"Raw response (truncated to 500 chars): {result_text[:500]}")
             return {
-                'comment': 'Error: Could not parse agent response'
+                'comment': 'Error: Could not parse agent response. Please review manually.'
             }
         except Exception as e:
             self.logger.error(f"Error calling agent for PR evaluation: {e}")
