@@ -1,38 +1,22 @@
 
 # JediMaster 🤖
 
-A Python tool and Azure Function for AI-powered evaluation and assignment of GitHub issues to GitHub Copilot.
+An AI-powered GitHub repository orchestrator that automatically manages issues and pull requests using GitHub Copilot.
 
 ---
 
 
 ## Features
 
-- **AI Issue Evaluation**: Uses Azure AI Foundry models to analyze GitHub issues for Copilot suitability.
-- **Automated Assignment**: Assigns suitable issues to Copilot with labels and comments.
-- **Automated PR Review**: Reviews open pull requests using AI (PRDeciderAgent) and can comment or mark PRs as ready to merge.
-- **Multi-Repo & User Support**: Process issues and PRs for multiple repositories or all repos for a user.
-- **Flexible Deployment**: Run as a standalone Python script or as Azure Functions (HTTP & Timer triggers).
-- **Library API & Helper Script**: Import and orchestrate directly in Python or use `example.py` for advanced scenarios (auto-merge, repo reset, seeding demo issues, CreatorAgent flows).
-- **Comprehensive Reporting**: Optionally generates detailed JSON reports.
-- **Robust Error Handling**: Handles API, network, and data errors gracefully.
-
-### Reset Endpoint (Azure Function)
-
-An HTTP endpoint `/api/reset` is available (auth level `function`) that resets every repository listed in the `AUTOMATION_REPOS` environment variable. It performs the same destructive baseline reset logic as `example.py --reset-repo`:
-
-Steps per repository:
-- Close all open issues (excluding PRs)
-- Close all open pull requests
-- Delete all branches except `main`
-- Restore baseline `hello.c` and `README.md`
-- Delete other root-level files except: `hello.c`, `.gitignore`, `README.md`, and the `.github` directory
-
-Example local invocation (PowerShell / curl):
-```bash
-curl -X POST -H "x-functions-key: <FUNCTION_KEY>" http://localhost:7071/api/reset
-```
-Response JSON returns a per-repository summary. Use cautiously; this is irreversible.
+- **🔄 Intelligent Orchestration**: Continuously monitors and manages repository health with automated workflows
+- **🤖 AI Issue Evaluation**: Uses Azure AI Foundry models to analyze GitHub issues for Copilot suitability
+- **✅ Automated Assignment**: Assigns suitable issues to Copilot with labels and comments
+- **📝 Smart PR Review**: Reviews open pull requests using AI and automatically merges when appropriate
+- **🔁 Continuous Loop Mode**: Runs continuously, checking repositories at regular intervals
+- **🎯 Capacity Management**: Intelligently limits concurrent Copilot assignments to prevent overload
+- **🏥 Repository Health Tracking**: Monitors stuck PRs, escalates issues, and ensures forward progress
+- **📊 Comprehensive Reporting**: Provides detailed visibility into workflow operations
+- **🛡️ Robust Error Handling**: Handles API rate limits, network issues, and errors gracefully
 
 ---
 
@@ -55,334 +39,271 @@ Response JSON returns a per-repository summary. Use cautiously; this is irrevers
    - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
    - `AZURE_AI_FOUNDRY_ENDPOINT`: Your Azure AI Foundry project endpoint
 
-   Optional Azure AI Foundry configuration:
+   Optional configuration:
    - `AZURE_AI_MODEL`: Azure AI Foundry model to use (default: `model-router`)
      - Examples: `model-router`, `gpt-4`, `gpt-4o`
-   - `AI_RESOURCE_GROUP`: Resource group containing the AI Foundry resource (used by deployment script)
-   - `AI_RESOURCE_NAME`: Name of the AI Foundry resource (used by deployment script)
+   - `MAX_COPILOT_SLOTS`: Maximum concurrent Copilot assignments (default: 10)
+   - `MAX_COMMENTS`: Maximum PR comments before escalating to human (default: 35)
+   - `CREATE_ISSUES`: Enable AI-powered issue creation (0=disabled, 1=enabled, default: 0)
 
-   **Authentication**: The application uses **Managed Identity authentication by default** (DefaultAzureCredential) to authenticate with Azure AI Foundry. This supports:
-   - **Managed Identity (preferred for Azure deployments)**
-   - Azure CLI authentication (for local development)
+   **Authentication**: The application uses **DefaultAzureCredential** for Azure AI Foundry authentication, which supports:
+   - Azure CLI authentication (recommended for local development - run `az login`)
+   - Managed Identity (for Azure deployments)
    - Environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
    - Visual Studio authentication
    - And other Azure credential sources
 
-   **No API keys required** - the deployment script automatically configures managed identity and role assignments.
-
-   Optional environment variables:
-   - `ISSUE_ACTION` (optional): Set to 'assign' to assign issues to Copilot, or 'label' to only add labels (default: 'label')
-   - `JUST_LABEL` (Functions Timer mode): Alternative flag used in Azure Function automation (`JUST_LABEL=1` means only labeling). Takes precedence over `ISSUE_ACTION` inside the automation Function.
-   - `TIMER_USERNAME` (optional): Used by timer-triggered Azure Functions to specify the GitHub username whose repositories should be processed on schedule.
-     - Example: `TIMER_USERNAME=github-username`
-     - Only needed for timer-based automation; not required for manual/scripted runs.
-   - `TIMER_REPOS` (optional): Comma-separated list of repositories for timer-triggered Azure Functions
-     - Example: `TIMER_REPOS=owner/repo1,owner/repo2`
-   - Automation-specific (see Azure Functions section): `AUTOMATION_REPOS`, `CREATE_ISSUES`, `CREATE_ISSUES_COUNT`, `PROCESS_PRS`, `AUTO_MERGE`, `USE_FILE_FILTER`, `SCHEDULE_CRON`.
-
-   You can use a `.env` file or set them in your shell:
+   Create a `.env` file in the project root:
    ```bash
-   # .env file (recommended for development)
+   # .env file (recommended)
    GITHUB_TOKEN=your_github_token
    AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
    AZURE_AI_MODEL=model-router  # Optional: defaults to model-router
-
-   ISSUE_ACTION=assign   # or label (default: label)
-   TIMER_USERNAME=github-username
-   TIMER_REPOS=owner/repo1,owner/repo2
-
-   # Or set in your shell
-   export GITHUB_TOKEN=your_github_token
-   export AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
-   export AZURE_AI_MODEL=model-router
+   
+   # Optional orchestration settings
+   MAX_COPILOT_SLOTS=10
+   MAX_COMMENTS=35
+   CREATE_ISSUES=0  # Set to 1 to enable AI issue creation
    ```
 
 ---
 
 ## Usage
 
+### Recommended: Orchestrate Mode with Loop
 
-### 1. As a Python Script
+The best way to run JediMaster is in **orchestrate mode with continuous loop**, which intelligently manages your repositories:
 
-Process issues for one or more repositories:
+```bash
+python example.py --orchestrate --loop 20
+```
+
+This will:
+- ✅ **Process all pull requests** - review, merge, or escalate as needed
+- ✅ **Assign issues to Copilot** - up to the configured capacity limit
+- ✅ **Track repository health** - monitor stuck PRs and forward progress
+- ✅ **Run continuously** - check every 20 minutes (configurable)
+- ✅ **Auto-stop when done** - stops when all work is complete or needs human review
+
+**Command-line options for orchestrate mode:**
+```bash
+# Run once and exit
+python example.py --orchestrate
+
+# Run continuously, checking every N minutes
+python example.py --orchestrate --loop 20
+
+# Enable AI-powered issue creation
+python example.py --orchestrate --loop 20 --create-issues
+
+# Process specific repositories
+python example.py --orchestrate --loop 20 owner/repo1 owner/repo2
+
+# Process all repos for a user (with topic "managed-by-coding-agent")
+python example.py --orchestrate --loop 20 --user github-username
+```
+
+The orchestrator will:
+1. **Process PRs first** (higher priority):
+   - Skip PRs already needing human review
+   - Skip PRs where Copilot is actively working
+   - Review PRs and either merge or request changes
+   - Track Copilot capacity to avoid overload
+   
+2. **Assign issues to Copilot** (with remaining capacity):
+   - Only assigns issues up to `MAX_COPILOT_SLOTS` limit
+   - Prioritizes PRs over new issue assignments
+   
+3. **Monitor health and auto-stop**:
+   - Stops when all PRs need human review and no issues to assign
+   - Provides detailed summary of each iteration
+
+---
+
+### Alternative: Manual Modes
+
+You can also run specific workflows manually:
+
+#### Process issues for repositories:
 ```bash
 python jedimaster.py owner/repo1 owner/repo2
 ```
 
-Process all repositories for a user:
+#### Process all repositories for a user:
 ```bash
 python jedimaster.py --user github-username
-# or using short form:
-python jedimaster.py -u github-username
 ```
 
-Process open pull requests for one or more repositories:
+#### Process pull requests:
 ```bash
 python jedimaster.py --process-prs owner/repo1 owner/repo2
 ```
 
-Process open pull requests for all repositories for a user:
-```bash
-python jedimaster.py --user github-username --process-prs
-# or using short form:
-python jedimaster.py -u github-username --process-prs
-```
 
+**Available command-line options:**
 
-
-**Options:**
-
-- `--user, -u USERNAME`     GitHub username to process (will process repos with topic "managed-by-coding-agent" or .coding_agent file)
-- `--output, -o FILENAME`   Output filename for the report (default: auto-generated)
-- `--save-report`           Save detailed report to JSON file (default: no)
+- `--orchestrate`           Run intelligent orchestration workflow (recommended)
+- `--loop MINUTES`          Run continuously, checking every N minutes
+- `--create-issues`         Enable AI-powered issue creation
+- `--user, -u USERNAME`     Process repos for a GitHub user (with topic "managed-by-coding-agent")
 - `--verbose, -v`           Enable verbose logging
-- `--just-label`            Only add labels to issues, do not assign them to Copilot
-- `--use-file-filter`       Use .coding_agent file filtering instead of topic filtering (slower but backwards compatible)
-- `--process-prs`           Process open pull requests with PRDeciderAgent (add comments or log check-in readiness)
-- `--auto-merge-reviewed`   Automatically merge reviewed PRs with no conflicts
-- `--create-issues`         Use CreatorAgent to suggest and open new issues in the specified repositories
+- `--output, -o FILENAME`   Output filename for the report
+- `--save-report`           Save detailed report to JSON file
 
-**CreatorAgent Example:**
-
-Create new issues using AI suggestions:
-```bash
-python jedimaster.py --create-issues owner/repo1 owner/repo2
-```
-
-This option uses LLM to suggest and open new issues in the specified repositories. It prints the full LLM conversation (prompts and response) for transparency and debugging.
+**Legacy options (for manual workflows):**
+- `--process-prs`           Process open pull requests only
+- `--just-label`            Only add labels to issues, do not assign them
+- `--populate-issues`       Seed a demo repo with test issues
+- `--reset-repo`            Reset a demo repo (closes all issues/PRs, deletes branches)
 
 ---
 
-### 1b. Using the Library Programmatically
+### Example Workflows
 
-You can import and drive `JediMaster` directly:
+**Start continuous orchestration:**
+```bash
+# Check every 30 minutes
+python example.py --orchestrate --loop 30
+
+# With AI issue creation enabled
+python example.py --orchestrate --loop 30 --create-issues
+
+# For specific repos
+python example.py --orchestrate --loop 30 owner/repo1 owner/repo2
+
+# For all user repos with topic "managed-by-coding-agent"
+python example.py --orchestrate --loop 30 --user myusername
+```
+
+**One-time operations:**
+```bash
+# Single orchestration pass (run once)
+python example.py --orchestrate owner/repo1
+
+# Create AI-suggested issues
+python example.py --create-issues owner/repo1
+
+# Process only PRs (no issue assignment)
+python example.py --process-prs owner/repo1
+```
+
+**Demo/test operations:**
+```bash
+# Populate demo repo with test issues
+python example.py --populate-issues lucabol/Hello-World
+
+# Reset demo repo to baseline
+python example.py --reset-repo lucabol/Hello-World
+```
+
+---
+
+### Using as a Library
+
+You can also import and use JediMaster programmatically:
 
 ```python
 from jedimaster import JediMaster
 
 jm = JediMaster(
-  github_token="<token>",
-  azure_foundry_endpoint="<azure_endpoint>",
-  # Uses managed authentication (no API key needed)
-  just_label=True,             # only label instead of assign
-  use_topic_filter=True,       # or False to use .coding_agent file
-  process_prs=False,
-  auto_merge_reviewed=False,
+    github_token="<token>",
+    azure_foundry_endpoint="<endpoint>",
+    # Uses DefaultAzureCredential (no API key needed)
 )
 
-report = jm.process_repositories(["owner/repo1", "owner/repo2"])
-jm.print_summary(report)
-# Optionally save report to file
-# jm.save_report(report)
+# Run orchestration workflow
+result = jm.simplified_workflow(
+    repo_names=["owner/repo1", "owner/repo2"],
+    create_new_issues=False
+)
+
+print(f"PRs processed: {result.prs_processed}")
+print(f"Issues assigned: {result.issues_assigned}")
 ```
 
 ---
 
-### 1c. `example.py` Helper Script
+## How It Works
 
-The `example.py` script showcases extended workflows and test/demo utilities.
+JediMaster uses a sophisticated workflow to manage repositories:
 
-Key additional flags beyond `jedimaster.py`:
+### Orchestration Flow
 
-| Flag | Purpose |
-|------|---------|
-| `--assign` | Force assignment (overrides `--just-label`) |
-| `--populate-issues` | Seed a demo repo with curated suitable/unsuitable issues |
-| `--reset-repo` | Aggressively reset a demo repo: close issues/PRs, delete branches, restore baseline files |
-| `--create-issues` | Invoke `CreatorAgent` to suggest & open issues |
-| `--auto-merge-reviewed` | Only perform reviewed PR auto-merge pass |
+1. **PR Processing (Priority 1)**:
+   - Fetches all open PRs
+   - Skips PRs already escalated to humans (`copilot-human-review` label)
+   - Skips PRs where Copilot is actively working
+   - For remaining PRs:
+     - Reviews using PRDeciderAgent (AI-powered review)
+     - If approved and mergeable → merges automatically
+     - If approved but merge conflicts → asks Copilot to fix (with detailed diff)
+     - If changes needed → requests changes and reassigns to Copilot
+     - If too many comments (>MAX_COMMENTS) → escalates to human review
 
-Examples:
+2. **Issue Assignment (Priority 2)**:
+   - With remaining Copilot capacity (MAX_COPILOT_SLOTS)
+   - Evaluates unprocessed issues using IssueDeciderAgent
+   - Assigns suitable issues to Copilot
+   - Labels unsuitable issues
 
-Populate a demo repo with synthetic issues:
-```bash
-python example.py --populate-issues lucabol/Hello-World
-```
+3. **Capacity Management**:
+   - Tracks active Copilot assignments across PRs and issues
+   - Limits concurrent work to prevent overload
+   - Prioritizes PR review over new issue assignments
 
-Reset the demo repo baseline:
-```bash
-python example.py --reset-repo lucabol/Hello-World
-```
+4. **Auto-Stop Criteria**:
+   - All PRs need human review AND
+   - No issues available to assign
+   - Prevents unnecessary API calls
 
-Run normal labeling (topic filter) on seeded repo:
-```bash
-python example.py lucabol/Hello-World --verbose
-```
+### Key Agents
 
-Auto-merge approved PRs only (skip issue processing):
-```bash
-python example.py --auto-merge-reviewed lucabol/Hello-World
-```
-
-Generate new issues via CreatorAgent:
-```bash
-python example.py --create-issues lucabol/Hello-World
-```
-
-NOTE: Some helper actions (reset/delete) assume you control the target repo and can modify branches & files.
+- **PRDeciderAgent**: Reviews PRs and decides whether to approve or request changes
+- **IssueDeciderAgent**: Evaluates issues for Copilot suitability
+- **CreatorAgent**: Suggests new issues based on repository analysis (when enabled)
 
 ---
-
-### 2. As Azure Functions
-
-#### HTTP Triggers
-
-- **ProcessUser**:  
-  `POST /api/ProcessUser`  
-  Body: `{ "username": "github-username" }`  
-  Or: `GET /api/ProcessUser?username=github-username`
-
-- **ProcessRepos**:  
-  `POST /api/ProcessRepos`  
-  Body: `{ "repo_names": ["owner/repo1", "owner/repo2"] }`  
-  Or: `GET /api/ProcessRepos?repo_names=owner/repo1,owner/repo2`
-
-#### Timer Triggers
-
-- **TimerProcessUser**:  
-  Runs on schedule, processes all repos for the user specified in the `TIMER_USERNAME` environment variable.
-
-- **TimerProcessRepos**:  
-  Runs on schedule, processes repos listed in the `TIMER_REPOS` environment variable (comma-separated).
-
-**Environment variables for timers:**
-```bash
-TIMER_USERNAME=github-username
-TIMER_REPOS=owner/repo1,owner/repo2
-```
-
-#### Local Development
-
-1. Install Azure Functions Core Tools and dependencies.
-2. Start the function app:
-   ```bash
-   func start
-   ```
-3. Use tools like Postman, curl, or PowerShell to call the HTTP endpoints.
-
-**Example PowerShell call:**
-```powershell
-$body = @{ username = "your-github-username" } | ConvertTo-Json
-Invoke-RestMethod -Uri "http://localhost:7071/api/ProcessUser" -Method Post -Body $body -ContentType "application/json"
-```
-
----
-
-#### 2a. Automated Orchestration Function (`function_app.py` root)
-
-The repository also includes a timer-driven automation Function (`AutomateRepos`) that performs a full cycle (optional issue creation, labeling/assignment, PR review, auto-merge) across a static list of repositories.
-
-Configure via environment variables (e.g. in Azure portal or `local.settings.json` for local test):
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AUTOMATION_REPOS` | Comma-separated `owner/repo` list to process | (required) |
-| `CREATE_ISSUES` | `1`/`true` to enable `CreatorAgent` | `0` |
-| `CREATE_ISSUES_COUNT` | Issues per repo when creation enabled | `3` |
-| `PROCESS_PRS` | Enable PR review agent | `1` |
-| `AUTO_MERGE` | Attempt merge of approved PRs | `1` |
-| `JUST_LABEL` | Only label, do not assign | `1` (label-only) |
-| `USE_FILE_FILTER` | Use `.coding_agent` file instead of topic | `0` |
-| `SCHEDULE_CRON` | NCRONTAB expression for timer | every 6h |
-
-Invocation log summary JSON is emitted at end of each run (Application Insights recommended).
-
----
-
-#### 2b. Deployment Guidance (Azure)
-
-Recommendations (Python Azure Functions best practices):
-
-- Use Python Functions v2 programming model (this project uses `func.FunctionApp()` style) and host version v4.
-- Deploy to Linux plan (Flex Consumption (FC1) preferred; fallback to Elastic Premium if needed).
-- Keep secrets in Azure Function App settings or Key Vault references (avoid committing `.env`).
-- Enable Application Insights for monitoring.
-- Secure HTTP endpoints (default level `function`; consider front door / APIM if exposed externally).
-- For scheduled automation, adjust `SCHEDULE_CRON` without code changes.
-- **Managed Identity is configured automatically** by the deployment script.
-
-**Recommended deployment using the included script:**
-
-1. Create a `.env` file with required variables:
-   ```bash
-   # Required configuration
-   GITHUB_TOKEN=your_token
-   RESOURCE_GROUP=jedimaster-rg
-  FUNCTION_APP_NAME=JediMaster2
-   AZURE_AI_FOUNDRY_ENDPOINT=https://your-resource.cognitiveservices.azure.com
-   
-   # Required for automation
-   AUTOMATION_REPOS=owner/repo1,owner/repo2
-   
-   # Optional AI resource configuration
-   AI_RESOURCE_GROUP=rg-lucabol-4040
-   # AI_RESOURCE_NAME=my-ai-resource  # Auto-detected from endpoint
-   ```
-
-2. Run the deployment script (no parameters needed):
-   ```powershell
-   .\deploy_existing.ps1
-   ```
-
-The script automatically:
-- Reads all configuration from `.env` file
-- Enables system-assigned managed identity on the Function App
-- Configures role assignments for Azure AI Foundry access
-- Deploys the code with proper settings
-
-Basic manual deployment steps (if not using the script):
-
-```bash
-# Log in
-az login
-
-# (Optional) create resource group
-az group create -n rg-jedimaster -l westus2
-
-# Create a storage account (required for Functions)
-az storage account create -g rg-jedimaster -n <uniqueStorageName> -l westus2 --sku Standard_LRS
-
-# Create a Linux Flex Consumption Function App
-az functionapp plan create -g rg-jedimaster -n plan-jedimaster --flex-consumption --location westus2
-az functionapp create -g rg-jedimaster -n jedimaster-func \
-  --storage-account <uniqueStorageName> \
-  --plan plan-jedimaster \
-  --runtime python \
-  --functions-version 4
-
-# Enable managed identity and configure role assignment
-az functionapp identity assign -n jedimaster-func -g rg-jedimaster
-PRINCIPAL_ID=$(az functionapp identity show -n jedimaster-func -g rg-jedimaster --query principalId -o tsv)
-az role assignment create --assignee $PRINCIPAL_ID --role "Cognitive Services User" --scope /subscriptions/<sub-id>/resourceGroups/<ai-rg>/providers/Microsoft.CognitiveServices/accounts/<ai-resource>
-
-# Configure required settings (no API key needed)
-az functionapp config appsettings set -g rg-jedimaster -n jedimaster-func --settings \
-  GITHUB_TOKEN=*** \
-  AZURE_AI_FOUNDRY_ENDPOINT=*** \
-  AUTOMATION_REPOS=owner/repo1,owner/repo2 \
-  JUST_LABEL=1 \
-  PROCESS_PRS=1 \
-  AUTO_MERGE=1
-
-# Deploy source (from repo root)
-func azure functionapp publish jedimaster-func
-```
-
-For infrastructure-as-code, consider Azure Developer CLI (azd) with a Bicep template referencing a Flex Consumption plan + Application Insights + Storage.
-
-Local test of automation timer (simulate run):
-```bash
-set AUT0MATION_REPOS=owner/repo1
-func start
-```
-
----
-
 
 ## Output
 
-- **Console**: Real-time progress and summary.
-- **JSON Report**: Detailed results, including assignment and PR review status, reasoning, and actions taken (only when `--save-report` flag is used).
+- **Console**: Real-time progress with summary statistics
+- **Continuous monitoring**: Shows iteration number, timestamp, and next check time
+- **Detailed logging**: Per-PR and per-issue status with reasons
+- **JSON Report**: Available with `--save-report` flag
+
+Example output:
+```
+================================================================================
+[SimplifiedWorkflow] Iteration #5 at 2025-11-07 10:30:00 UTC
+================================================================================
+
+--- Processing: owner/repo1 ---
+
+Step 1/2: Processing pull requests...
+
+Found 15 open PRs (3 need human review, 12 processed):
+  PR #123: Fix authentication bug -> Merged
+  PR #124: Add new feature -> Changes requested
+  PR #125: Update documentation -> Copilot working
+
+Copilot actively working on 3/10 PRs
+
+Step 2/2: Processing issues (up to 7 assignments available)...
+
+Processing 5 unprocessed issues:
+  Issue #45: Add error handling -> Assigned to Copilot
+  Issue #46: Fix typo -> Assigned to Copilot
+  Issue #47: Complex refactoring -> Not suitable for Copilot
+
+================================================================================
+Workflow complete:
+  - 15 PRs processed
+  - 2 issues assigned to Copilot
+  - Duration: 45.2s
+================================================================================
+
+[SimplifiedWorkflow] Next run at: 2025-11-07 10:50:00 UTC
+```
 
 ---
 
