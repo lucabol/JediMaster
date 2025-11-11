@@ -150,7 +150,8 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                     use_topic_filter=not use_file_filter,
                     manage_prs=False
                 ) as jedi:
-                    report = await jedi.process_repositories([repo_full])
+                    # Skip issue creation in process_repositories since we handle it separately above
+                    report = await jedi.process_repositories([repo_full], skip_issue_creation=True)
                     repo_block['issue_report'] = {
                         'total': report.total_issues,
                         'assigned': report.assigned,

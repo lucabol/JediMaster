@@ -69,6 +69,7 @@ class ProcessingReport:
 
 
 HUMAN_ESCALATION_LABEL = "copilot-human-review"
+NO_COPILOT_LABEL = "no-github-copilot"
 COPILOT_ERROR_LABEL_PREFIX = "copilot-error-retry-"
 MERGE_CONFLICT_LABEL_PREFIX = "merge-conflict-retry-"
 MERGE_ATTEMPT_LABEL_PREFIX = "copilot-merge-attempt-"
@@ -560,6 +561,21 @@ class JediMaster:
         repo_full = pr.base.repo.full_name
         repo = pr.base.repo
 
+        # Skip PRs that need human intervention (check BEFORE fetching timeline - labels are cheap)
+        if self._has_label(pr, HUMAN_ESCALATION_LABEL):
+            # Don't print - already counted in summary line
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='human_escalated',
+                    details='Escalated to human reviewer',
+                    action='skip',
+                )
+            )
+            return results
+
         # Fetch timeline once for all checks (expensive operation)
         try:
             timeline = list(pr.as_issue().get_timeline())
@@ -568,8 +584,25 @@ class JediMaster:
             timeline = []
 
         # Skip PRs without Copilot assigned
+        # Check both pr.assignees AND timeline for assignment events (to handle race conditions)
         assignees = list(pr.assignees) if hasattr(pr, 'assignees') else []
-        has_copilot_assigned = any('copilot' in assignee.login.lower() for assignee in assignees)
+        has_copilot_in_assignees = any('copilot' in assignee.login.lower() for assignee in assignees)
+        
+        # Also check timeline for assignment events (more reliable than pr.assignees for just-assigned PRs)
+        has_copilot_assigned_in_timeline = False
+        if timeline:
+            for event in timeline:
+                event_type = getattr(event, 'event', None)
+                if event_type == 'assigned':
+                    assignee = getattr(event, 'assignee', None)
+                    if assignee:
+                        login = getattr(assignee, 'login', '') or ''
+                        if 'copilot' in login.lower():
+                            has_copilot_assigned_in_timeline = True
+                            break
+        
+        has_copilot_assigned = has_copilot_in_assignees or has_copilot_assigned_in_timeline
+        
         if not has_copilot_assigned:
             print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot not assigned)")
             results.append(
@@ -579,21 +612,6 @@ class JediMaster:
                     title=pr.title,
                     status='skipped',
                     details='Copilot not assigned to this PR',
-                    action='skip',
-                )
-            )
-            return results
-
-        # Skip PRs that need human intervention
-        if self._has_label(pr, HUMAN_ESCALATION_LABEL):
-            print(f"  PR #{pr.number}: {pr.title[:60]} -> Needs human review")
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='human_escalated',
-                    details='Escalated to human reviewer',
                     action='skip',
                 )
             )
@@ -618,80 +636,120 @@ class JediMaster:
             return results
 
         # Check if Copilot hit an error - if so, reassign to retry (pass timeline)
-        copilot_status = self._get_copilot_work_status(pr, timeline=timeline)
-        if copilot_status.get('last_error'):
-            # Copilot encountered an error, check if we should retry or escalate
-            error_msg = copilot_status.get('last_error', 'Unknown error')
-            error_time = copilot_status.get('error_time')
-            self.logger.info(f"PR #{pr.number}: Detected Copilot error at {error_time}: {error_msg[:100]}")
-            
-            total_comments = self._count_total_comments(pr)
-            
-            if total_comments > self.max_comments:
-                # Too many retries, escalate to human
-                self.logger.warning(
-                    f"PR #{pr.number}: Escalating to human - Copilot error with too many comments "
-                    f"({total_comments} > {self.max_comments})"
-                )
-                if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
-                    pr.add_to_labels(HUMAN_ESCALATION_LABEL)
-                    error_msg = copilot_status.get('last_error', 'Unknown error')[:200]
-                    pr.create_comment(
-                        f"Copilot encountered an error and the PR has {total_comments} comments "
-                        f"(exceeds limit of {self.max_comments}). Escalating to human review.\n\n"
-                        f"Last error: {error_msg}"
+        try:
+            copilot_status = self._get_copilot_work_status(pr, timeline=timeline)
+            if copilot_status.get('last_error'):
+                # Copilot encountered an error, check if we should retry or escalate
+                error_msg = copilot_status.get('last_error', 'Unknown error')
+                error_time = copilot_status.get('error_time')
+                
+                total_comments = self._count_total_comments(pr)
+                
+                if total_comments > self.max_comments:
+                    # Too many retries, escalate to human
+                    self.logger.warning(
+                        f"PR #{pr.number}: Escalating to human - Copilot error with too many comments "
+                        f"({total_comments} > {self.max_comments})"
                     )
-                print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (Copilot error + too many comments)")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='human_escalated',
-                        details=f'Copilot error + exceeded max comments ({total_comments} > {self.max_comments})',
-                        action='escalate_copilot_error',
-                    )
-                )
-            else:
-                # Check if we have available slots
-                if copilot_slots_tracker is not None and copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot slots full: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS})")
+                    try:
+                        if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
+                            pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                            error_msg = copilot_status.get('last_error', 'Unknown error')[:200]
+                            pr.create_issue_comment(
+                                f"Copilot encountered an error and the PR has {total_comments} comments "
+                                f"(exceeds limit of {self.max_comments}). Escalating to human review.\n\n"
+                                f"Last error: {error_msg}"
+                            )
+                            self.logger.info(f"PR #{pr.number}: Successfully escalated to human")
+                    except Exception as exc:
+                        self.logger.error(f"PR #{pr.number}: Failed to escalate to human: {exc}")
+                        if self.verbose:
+                            import traceback
+                            self.logger.error(f"Traceback: {traceback.format_exc()}")
+                    
+                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (Copilot error + too many comments)")
                     results.append(
                         PRRunResult(
                             repo=repo_full,
                             pr_number=pr.number,
                             title=pr.title,
-                            status='skipped',
-                            details=f'Copilot slots full ({copilot_slots_tracker["used"]}/{MAX_COPILOT_SLOTS})',
-                            action='skip_slots_full',
+                            status='human_escalated',
+                            details=f'Copilot error + exceeded max comments ({total_comments} > {self.max_comments})',
+                            action='escalate_copilot_error',
                         )
                     )
-                    return results
-                
-                # Retry by reassigning to Copilot
-                error_msg_short = copilot_status.get('last_error', 'Unknown error')[:200]
-                self.logger.info(
-                    f"PR #{pr.number}: Retrying after Copilot error (comments: {total_comments}/{self.max_comments}, "
-                    f"Copilot slots: {copilot_slots_tracker.get('used', 0) if copilot_slots_tracker else 'N/A'}/{MAX_COPILOT_SLOTS})"
+                else:
+                    # Check if we have available slots
+                    if copilot_slots_tracker is not None and copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
+                        print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot slots full: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS})")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_full,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='skipped',
+                                details=f'Copilot slots full ({copilot_slots_tracker["used"]}/{MAX_COPILOT_SLOTS})',
+                                action='skip_slots_full',
+                            )
+                        )
+                        return results
+                    
+                    # Retry by reassigning to Copilot
+                    error_msg_short = copilot_status.get('last_error', 'Unknown error')[:200]
+                    
+                    try:
+                        pr.create_issue_comment(f"@copilot Please retry this PR. Previous error: {error_msg_short}")
+                        
+                        # Count this as a new Copilot request
+                        if copilot_slots_tracker is not None:
+                            copilot_slots_tracker['used'] += 1
+                        
+                        print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigned (Copilot error retry)")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_full,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='changes_requested',
+                                details='Reassigned after Copilot error',
+                                action='reassign_after_error',
+                            )
+                        )
+                    except Exception as comment_exc:
+                        self.logger.error(f"PR #{pr.number}: Failed to add retry comment: {comment_exc}")
+                        if self.verbose:
+                            import traceback
+                            self.logger.error(f"Traceback: {traceback.format_exc()}")
+                        print(f"  PR #{pr.number}: {pr.title[:60]} -> Error adding retry comment (will continue with next PR)")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_full,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='error',
+                                details=f'Failed to add retry comment: {str(comment_exc)[:200]}',
+                                action='comment_failed',
+                            )
+                        )
+                return results
+        except Exception as copilot_error_exc:
+            # Catch any unexpected errors in the Copilot error handling logic
+            self.logger.error(f"PR #{pr.number}: Unexpected error in Copilot error handling: {copilot_error_exc}")
+            if self.verbose:
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Error in Copilot error handling (will continue with next PR)")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='error',
+                    details=f'Error in Copilot error handling: {str(copilot_error_exc)[:200]}',
+                    action='copilot_error_handling_failed',
                 )
-                pr.create_comment(f"@copilot Please retry this PR. Previous error: {error_msg_short}")
-                
-                # Count this as a new Copilot request
-                if copilot_slots_tracker is not None:
-                    copilot_slots_tracker['used'] += 1
-                
-                print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigned (Copilot error retry)")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='changes_requested',
-                        details='Reassigned after Copilot error',
-                        action='reassign_after_error',
-                    )
-                )
-            return results
+            )
+            # Do NOT return here - continue to normal PR processing below
 
         # Refresh PR data
         try:
@@ -715,9 +773,9 @@ class JediMaster:
             )
             return results
 
-        # Check if PR is approved by us and it's mergeable - if so, merge it
-        if self._is_already_approved_by_us(pr) and getattr(pr, 'mergeable', None) is True:
-            return await self._merge_pr(pr)
+        # Check if PR is approved by us - if so, try to merge it
+        if self._is_already_approved_by_us(pr):
+            return await self._merge_pr(pr, copilot_slots_tracker)
         
         # For all other PRs: review and act
         return await self._review_and_act_on_pr(pr, copilot_slots_tracker)
@@ -763,139 +821,38 @@ class JediMaster:
 
         pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
 
-        # Call agent to evaluate PR
-        try:
-            agent_result = await self.pr_decider.evaluate_pr(pr_text)
-        except Exception as exc:
-            print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (review failed)")
-            if self.verbose:
-                self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='error',
-                    details=self._shorten_text(str(exc)),
-                    action='review_failed',
-                )
-            )
-            return results
-
-        # Check if the agent result is an error (not actual feedback)
-        comment_text = agent_result.get('comment', '')
-        if comment_text.startswith('Error:'):
-            print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (agent error)")
-            if self.verbose:
-                self.logger.error(f"Skipping PR #{pr.number} due to agent error: {comment_text}")
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='error',
-                    details=self._shorten_text(comment_text),
-                    action='agent_error',
-                )
-            )
-            return results
+        # Call agent to evaluate PR with exponential backoff retry
+        agent_result = None
+        max_retries = 3
+        base_delay = 1
         
-        # Check if PR is approved by agent and mergeable
-        is_approved = agent_result.get('decision') == 'accept'
-        is_mergeable = getattr(pr, 'mergeable', None) is True
-        
-        if is_approved and is_mergeable:
-            # Attempt to merge immediately
-            return await self._merge_pr(pr)
-        else:
-            # Request changes and reassign to Copilot
-            # But first check if there are too many comments
-            total_comments = self._count_total_comments(pr)
-            
-            if total_comments > self.max_comments:
-                # Too many comments, escalate to human
-                if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
-                    pr.add_to_labels(HUMAN_ESCALATION_LABEL)
-                    comment = agent_result.get('comment', '')
-                    if comment:
-                        pr.create_comment(
-                            f"This PR has {total_comments} comments (exceeds limit of {self.max_comments}). "
-                            f"Escalating to human review.\n\nAgent feedback: {comment}"
-                        )
-                    else:
-                        pr.create_comment(
-                            f"This PR has {total_comments} comments (exceeds limit of {self.max_comments}). "
-                            f"Escalating to human review."
-                        )
-                print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (too many comments: {total_comments})")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='human_escalated',
-                        details=f'Exceeded max comments ({total_comments} > {self.max_comments})',
-                        action='escalate_comments',
-                    )
-                )
-            else:
-                # Normal flow: request changes and reassign
-                # But first check if we have available slots
-                if copilot_slots_tracker is not None and copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot slots full: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS})")
-                    results.append(
-                        PRRunResult(
-                            repo=repo_full,
-                            pr_number=pr.number,
-                            title=pr.title,
-                            status='skipped',
-                            details=f'Copilot slots full ({copilot_slots_tracker["used"]}/{MAX_COPILOT_SLOTS})',
-                            action='skip_slots_full',
-                        )
-                    )
-                    return results
+        for attempt in range(max_retries):
+            try:
+                agent_result = await self.pr_decider.evaluate_pr(pr_text)
                 
-                # The comment should always be present at this point (errors handled above)
-                comment = agent_result.get('comment', '')
-                if not comment:
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (no comment)")
-                    if self.verbose:
-                        self.logger.warning(f"Skipping PR #{pr.number}: agent result has neither 'accept' nor 'comment'")
-                    results.append(
-                        PRRunResult(
-                            repo=repo_full,
-                            pr_number=pr.number,
-                            title=pr.title,
-                            status='skipped',
-                            details='Agent returned no decision or comment',
-                            action='skip_no_comment',
-                        )
-                    )
-                    return results
-                
-                comment_body = f"@copilot {comment}"
-                try:
-                    pr.create_review(event='REQUEST_CHANGES', body=comment_body)
+                # Check if the agent result is an error (not actual feedback)
+                comment_text = agent_result.get('comment', '')
+                if not comment_text.startswith('Error:'):
+                    break  # Success!
                     
-                    # Count this as a new Copilot request
-                    if copilot_slots_tracker is not None:
-                        copilot_slots_tracker['used'] += 1
+                # Agent returned an error response
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    self.logger.warning(f"PR #{pr.number}: Agent error (attempt {attempt + 1}/{max_retries}), retrying in {delay}s: {comment_text[:100]}")
+                    await asyncio.sleep(delay)
+                else:
+                    # Final attempt also failed
+                    self.logger.error(f"PR #{pr.number}: Agent error after {max_retries} attempts: {comment_text[:200]}")
                     
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Changes requested")
-                    results.append(
-                        PRRunResult(
-                            repo=repo_full,
-                            pr_number=pr.number,
-                            title=pr.title,
-                            status='changes_requested',
-                            details=self._shorten_text(comment_body),
-                            action='request_changes',
-                        )
-                    )
-                except Exception as exc:
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (comment failed)")
-                    if self.verbose:
-                        self.logger.error(f"Failed to request changes on PR #{pr.number}: {exc}")
+            except Exception as exc:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    self.logger.warning(f"PR #{pr.number}: Exception during review (attempt {attempt + 1}/{max_retries}), retrying in {delay}s: {exc}")
+                    await asyncio.sleep(delay)
+                else:
+                    # Final attempt failed with exception
+                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (review failed after {max_retries} attempts)")
+                    self.logger.error(f"PRDecider evaluation failed for PR #{pr.number} after {max_retries} attempts: {exc}")
                     results.append(
                         PRRunResult(
                             repo=repo_full,
@@ -903,18 +860,127 @@ class JediMaster:
                             title=pr.title,
                             status='error',
                             details=self._shorten_text(str(exc)),
-                            action='request_changes_failed',
+                            action='review_failed',
                         )
                     )
+                    return results
+        
+        # If we exhausted retries and still have error response, escalate to human
+        if agent_result is None or agent_result.get('comment', '').startswith('Error:'):
+            error_msg = agent_result.get('comment', 'Unknown error') if agent_result else 'All retries failed'
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (agent errors)")
+            self.logger.error(f"Escalating PR #{pr.number} to human after agent failures: {error_msg[:200]}")
+            
+            # Add human escalation label
+            try:
+                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+            except Exception as e:
+                self.logger.error(f"Failed to add human escalation label to PR #{pr.number}: {e}")
+            
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='human_escalated',
+                    details=f'Escalated after agent failures: {error_msg[:200]}',
+                    action='escalate_agent_error',
+                )
+            )
+            return results
+        
+        # Extract decision and comment (both are always present now)
+        decision = agent_result.get('decision', 'changes_requested')
+        comment = agent_result.get('comment', '')
+        
+        # If decision is 'accept', try to merge immediately
+        if decision == 'accept':
+            return await self._merge_pr(pr, copilot_slots_tracker)
+        
+        # If decision is 'changes_requested', request changes and reassign to Copilot
+        # Check comment limit before requesting changes
+        total_comments = self._count_total_comments(pr)
+        
+        if total_comments > self.max_comments:
+            # Too many comments, escalate to human
+            if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
+                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                pr.create_issue_comment(
+                    f"This PR has {total_comments} comments (exceeds limit of {self.max_comments}). "
+                    f"Escalating to human review.\n\nAgent feedback: {comment}"
+                )
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (too many comments: {total_comments})")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='human_escalated',
+                    details=f'Exceeded max comments ({total_comments} > {self.max_comments})',
+                    action='escalate_comments',
+                )
+            )
+            return results
+        
+        # Normal flow: request changes and reassign
+        # Check if we have available slots
+        if copilot_slots_tracker is not None and copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot slots full: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS})")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='skipped',
+                    details=f'Copilot slots full ({copilot_slots_tracker["used"]}/{MAX_COPILOT_SLOTS})',
+                    action='skip_slots_full',
+                )
+            )
+            return results
+        
+        # Request changes with agent's comment
+        comment_body = f"@copilot {comment}"
+        try:
+            pr.create_review(event='REQUEST_CHANGES', body=comment_body)
+            
+            # Count this as a new Copilot request
+            if copilot_slots_tracker is not None:
+                copilot_slots_tracker['used'] += 1
+            
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Changes requested")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='changes_requested',
+                    details=self._shorten_text(comment_body),
+                    action='request_changes',
+                )
+            )
+        except Exception as exc:
+            print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (comment failed)")
+            if self.verbose:
+                self.logger.error(f"Failed to request changes on PR #{pr.number}: {exc}")
+            results.append(
+                PRRunResult(
+                    repo=repo_full,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='error',
+                    details=self._shorten_text(str(exc)),
+                    action='request_changes_failed',
+                )
+            )
         
         return results
     
-    async def _merge_pr(self, pr) -> List[PRRunResult]:
-        """Attempt to merge an approved PR."""
+    async def _merge_pr(self, pr, copilot_slots_tracker: Optional[Dict[str, int]] = None) -> List[PRRunResult]:
+        """Attempt to merge an approved PR. If merge fails, reassign to Copilot with error details."""
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
         repo = pr.base.repo
-        
+
         # Check if PR is draft and convert to ready if needed
         if getattr(pr, 'draft', False):
             if self.verbose:
@@ -940,31 +1006,31 @@ class JediMaster:
                     self.logger.info(f"PR #{pr.number} refreshed after marking ready, new draft status: {pr.draft}")
             except Exception as exc:
                 self.logger.error(f"Failed to refresh PR #{pr.number} after marking ready: {exc}")
-        
+
         try:
             # Try to merge
             pr.merge(merge_method='squash')
-            
+
             # Clean up retry labels on successful merge
             self._remove_copilot_error_retry_labels(pr)
-            
+
             # Close linked issues
             closed_issues = self._close_linked_issues(repo, pr.number, pr.title)
-            
+
             # Delete branch if configured
             try:
                 self._delete_pr_branch(pr)
             except Exception as exc:
                 if self.verbose:
                     self.logger.debug(f"Failed to delete branch for PR #{pr.number}: {exc}")
-            
+
             details = f'Merged successfully'
             if closed_issues:
                 details += f' (closed issues: {closed_issues})'
                 print(f"  PR #{pr.number}: {pr.title[:60]} -> Merged (closed issues: {closed_issues})")
             else:
                 print(f"  PR #{pr.number}: {pr.title[:60]} -> Merged")
-            
+
             results.append(
                 PRRunResult(
                     repo=repo_full,
@@ -976,20 +1042,111 @@ class JediMaster:
                 )
             )
         except Exception as exc:
-            print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (merge failed)")
-            if self.verbose:
-                self.logger.error(f"Failed to merge PR #{pr.number}: {exc}")
-            results.append(
-                PRRunResult(
-                    repo=repo_full,
-                    pr_number=pr.number,
-                    title=pr.title,
-                    status='merge_error',
-                    details=self._shorten_text(str(exc)),
-                    action='merge_failed',
+            # Merge failed - get conflict details and reassign to Copilot
+            error_msg = str(exc)
+            
+            # Get the diff/merge conflict details with base branch context
+            diff_content = None
+            try:
+                diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
+                if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
+                    diff_content, _, _ = diff_result
+                    if diff_content:
+                        # Limit diff size to avoid huge comments (increased to 10000 for structured format)
+                        if len(diff_content) > 10000:
+                            diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
+                else:
+                    self.logger.warning(f"PR #{pr.number}: _fetch_pr_diff_with_base_versions returned unexpected value: {diff_result}")
+            except Exception as diff_exc:
+                self.logger.warning(f"Failed to fetch diff for PR #{pr.number}: {diff_exc}")
+            
+            # Check comment limit before reassigning
+            total_comments = self._count_total_comments(pr)
+            if total_comments > self.max_comments:
+                # Too many attempts, escalate to human
+                if not self._has_label(pr, HUMAN_ESCALATION_LABEL):
+                    pr.add_to_labels(HUMAN_ESCALATION_LABEL)
+                    
+                    escalation_msg = (
+                        f"This PR is approved but merge failed after {total_comments} attempts. "
+                        f"Manual intervention required.\n\n**Merge error:** {error_msg}"
+                    )
+                    
+                    # Include diff with base context if available
+                    if diff_content:
+                        escalation_msg += f"\n\n**Merge conflict details:**\n{diff_content}"
+                    
+                    pr.create_issue_comment(escalation_msg)
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (too many merge attempts)")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='human_escalated',
+                        details=f'Merge failed after {total_comments} attempts: {self._shorten_text(error_msg)}',
+                        action='escalate_merge_failed',
+                    )
                 )
-            )
-        
+                return results
+            
+            # Check if we have available Copilot slots
+            if copilot_slots_tracker is not None and copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (Copilot slots full: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS})")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='skipped',
+                        details=f'Copilot slots full ({copilot_slots_tracker["used"]}/{MAX_COPILOT_SLOTS})',
+                        action='skip_slots_full',
+                    )
+                )
+                return results
+            
+            # Reassign to Copilot with full error details
+            try:
+                comment_msg = (
+                    f"@copilot This PR is approved but merge failed with the following error:\n\n"
+                    f"```\n{error_msg}\n```\n\n"
+                )
+                
+                # Include diff/conflict details with base context if available
+                if diff_content:
+                    comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
+                
+                comment_msg += "Please fix the merge conflicts and update the PR so it can be merged."
+                
+                pr.create_issue_comment(comment_msg)
+                if copilot_slots_tracker is not None:
+                    copilot_slots_tracker['used'] += 1
+                
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigned (merge failed)")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='reassigned_copilot',
+                        details=f'Merge failed, reassigned to Copilot: {self._shorten_text(error_msg)}',
+                        action='fix_merge_error',
+                    )
+                )
+            except Exception as comment_exc:
+                self.logger.error(f"Failed to reassign PR #{pr.number} to Copilot after merge failure: {comment_exc}")
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (reassignment failed)")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='error',
+                        details=f'Merge failed and reassignment failed: {self._shorten_text(error_msg)}',
+                        action='error',
+                    )
+                )
+
         return results
 
     async def manage_pull_requests(self, repo_name: str, batch_size: int = 15) -> Tuple[List[PRRunResult], int]:
@@ -1012,11 +1169,37 @@ class JediMaster:
             if batch_size:
                 pulls = pulls[:batch_size]
             
-            print(f"\nProcessing {len(pulls)} open PRs:")
+            # Count PRs that need human review (before processing)
+            human_review_count = sum(1 for pr in pulls if self._has_label(pr, HUMAN_ESCALATION_LABEL))
+            processable_count = len(pulls) - human_review_count
+            
+            if human_review_count > 0:
+                print(f"\nProcessing {len(pulls)} open PRs ({human_review_count} need human review, {processable_count} to process):")
+            else:
+                print(f"\nProcessing {len(pulls)} open PRs:")
+            
             for pr in pulls:
-                # Pass the tracker so it can count active work and new assignments
-                pr_results = await self._process_pr_state_machine(pr, copilot_slots_tracker)
-                results.extend(pr_results)
+                try:
+                    # Pass the tracker so it can count active work and new assignments
+                    pr_results = await self._process_pr_state_machine(pr, copilot_slots_tracker)
+                    results.extend(pr_results)
+                except Exception as exc:
+                    # Don't let one PR failure stop processing of other PRs
+                    self.logger.error(f"Error processing PR #{pr.number}: {exc}")
+                    if self.verbose:
+                        import traceback
+                        self.logger.error(f"Traceback: {traceback.format_exc()}")
+                    results.append(
+                        PRRunResult(
+                            repo=repo_name,
+                            pr_number=pr.number,
+                            title=getattr(pr, 'title', 'Unknown'),
+                            status='error',
+                            details=f'Processing failed: {str(exc)[:200]}',
+                            action='error',
+                        )
+                    )
+                    continue  # Continue with next PR
                             
         except Exception as exc:
             if self.verbose:
@@ -1104,11 +1287,7 @@ class JediMaster:
                         
                         # Close the issue
                         issue.edit(state='closed')
-                        
-                        self.logger.info(f"Closed issue #{issue_number} linked to PR #{pr_number}")
                         closed_issues.append(issue_number)
-                    else:
-                        self.logger.info(f"Issue #{issue_number} linked to PR #{pr_number} was already closed")
                         
                 except Exception as e:
                     self.logger.error(f"Failed to close linked issue #{issue_number} for PR #{pr_number}: {e}")
@@ -1144,8 +1323,6 @@ class JediMaster:
             # Delete the branch
             git_ref = head_repo.get_git_ref(f"heads/{head_branch_name}")
             git_ref.delete()
-            
-            self.logger.info(f"Successfully deleted branch '{head_branch_name}' for PR #{pr.number}")
             return True
             
         except Exception as e:
@@ -1460,6 +1637,8 @@ class JediMaster:
             copilot_error_time = None
             last_copilot_commit = None
             last_copilot_assigned = None
+            last_review_by_us = None
+            last_copilot_comment = None  # Track when Copilot last commented
 
             for event in timeline:
                 event_type = getattr(event, 'event', None)
@@ -1492,6 +1671,13 @@ class JediMaster:
                 # Check for comment events (legacy detection)
                 elif event_type == 'commented':
                     body = getattr(event, 'body', '') or ''
+                    
+                    # Track comments from Copilot
+                    actor = getattr(event, 'actor', None)
+                    if actor:
+                        actor_login = getattr(actor, 'login', '') or ''
+                        if 'copilot' in actor_login.lower():
+                            last_copilot_comment = created_at
 
                     # Check for Copilot work events in comments (case-insensitive)
                     body_lower = body.lower()
@@ -1519,6 +1705,19 @@ class JediMaster:
                                 if commit_date and commit_date.tzinfo is None:
                                     commit_date = commit_date.replace(tzinfo=timezone.utc)
                                 last_copilot_commit = commit_date
+                
+                # Check for review events by us
+                elif event_type == 'reviewed':
+                    user = getattr(event, 'user', None)
+                    if user:
+                        user_login = getattr(user, 'login', '') or ''
+                        # Check if review is by our bot (the authenticated user)
+                        try:
+                            our_login = self.github_client.get_user().login
+                            if user_login == our_login:
+                                last_review_by_us = created_at
+                        except:
+                            pass  # Can't determine our login, skip this check
 
             # Determine if Copilot is currently working
             # Copilot is working if:
@@ -1529,13 +1728,19 @@ class JediMaster:
             
             # Check if Copilot was just assigned but hasn't started working yet
             if last_copilot_assigned:
-                # If there's no start event, or assignment is more recent than start, 
+                # If there's no start event, or assignment is more recent than start,
                 # Copilot is about to start working
                 if not copilot_start or last_copilot_assigned > copilot_start:
                     # Make sure there's also no finish/error after the assignment
                     if not copilot_finish or copilot_finish < last_copilot_assigned:
                         if not copilot_error_time or copilot_error_time < last_copilot_assigned:
-                            is_working = True  # Assigned but not yet picked up
+                            # Also make sure we haven't reviewed the PR after the assignment
+                            if not last_review_by_us or last_review_by_us < last_copilot_assigned:
+                                # Check time since assignment - if > 2 hours, assume Copilot abandoned it
+                                now = datetime.now(timezone.utc)
+                                time_since_assigned = now - last_copilot_assigned
+                                if time_since_assigned.total_seconds() < 7200:  # 2 hours
+                                    is_working = True  # Assigned but not yet picked up
             
             if copilot_start:
                 # Check if there's a more recent finish/error
@@ -1543,8 +1748,15 @@ class JediMaster:
                     is_working = False  # Finished after starting
                 elif copilot_error_time and copilot_error_time > copilot_start:
                     is_working = False  # Stopped with error after starting
+                # Check if Copilot commented after starting work (means work is done even without formal finish event)
+                elif last_copilot_comment and last_copilot_comment > copilot_start:
+                    is_working = False  # Copilot finished (posted comment)
                 else:
-                    is_working = True  # Started but not finished/errored
+                    # Check time since start - if > 2 hours without finish, assume Copilot abandoned it
+                    now = datetime.now(timezone.utc)
+                    time_since_start = now - copilot_start
+                    if time_since_start.total_seconds() < 7200:  # 2 hours
+                        is_working = True  # Started but not finished/errored (within reasonable time)
             
             # Also check for recent commits
             if last_copilot_commit:
@@ -1554,6 +1766,26 @@ class JediMaster:
                 if time_since_commit.total_seconds() < 1800:  # 30 minutes
                     is_working = True
 
+            # IMPORTANT: Only report an error if it's the LAST event (no work started/finished after it)
+            # Clear the error if Copilot worked again after the error occurred
+            if copilot_error_time:
+                # Check if there's any activity after the error
+                has_activity_after_error = False
+                
+                if copilot_start and copilot_start > copilot_error_time:
+                    has_activity_after_error = True
+                if copilot_finish and copilot_finish > copilot_error_time:
+                    has_activity_after_error = True
+                if last_copilot_assigned and last_copilot_assigned > copilot_error_time:
+                    has_activity_after_error = True
+                if last_review_by_us and last_review_by_us > copilot_error_time:
+                    has_activity_after_error = True
+                
+                # If there's activity after the error, clear it (it's old news)
+                if has_activity_after_error:
+                    copilot_error = None
+                    copilot_error_time = None
+
             result = {
                 'is_working': is_working,
                 'last_start': copilot_start,
@@ -1561,7 +1793,8 @@ class JediMaster:
                 'last_error': copilot_error,
                 'error_time': copilot_error_time,
                 'last_commit': last_copilot_commit,
-                'last_assigned': last_copilot_assigned
+                'last_assigned': last_copilot_assigned,
+                'last_review_by_us': last_review_by_us
             }
 
             return result
@@ -1958,22 +2191,154 @@ class JediMaster:
                 )
 
         if not diff_chunks:
-            tag = 'copilot:no-files'
-            message = (
-                "No file changes were detected in this PR. "
-                "If work is still in progress, push your commits before requesting review."
-            )
-            self._ensure_comment_with_tag(pr, tag, message)
-            return None, PRRunResult(
-                repo=repo_full_name,
-                pr_number=pr.number,
-                title=pr.title,
-                status='skipped',
-                details='No files to review',
-                state_before=STATE_PENDING_REVIEW,
-                state_after=STATE_PENDING_REVIEW,
-                action='no_files',
-            )
+            # No file changes - could be a documentation-only PR or Copilot determined no changes needed
+            # Return empty diff and let PRDecider review it
+            return "", None
+
+        # Return the combined diff content
+        return "\n".join(diff_chunks), None
+    
+    def _fetch_pr_diff_with_base_versions(self, pr, repo_full_name: str) -> tuple[Optional[str], Optional[str], Optional[PRRunResult]]:
+        """Return the diff and base branch versions of modified files.
+        
+        Creates a structured diff showing:
+        1. The standard unified diff (patch) from the PR
+        2. Context from the base branch version for reference
+        
+        Returns:
+            tuple of (diff_content, base_versions_content, error_result)
+        """
+        try:
+            diff_sections: List[str] = []
+            
+            try:
+                files = list(pr.get_files())
+            except Exception as exc:
+                self.logger.warning(f"Failed to get files for PR #{pr.number}: {exc}")
+                return None, None, None
+            
+            if not files:
+                return None, None, None
+            
+            # Get repository for fetching base versions
+            repo = None
+            try:
+                owner, repo_name = repo_full_name.split('/')
+                g = Github(self.github_token)
+                repo = g.get_repo(repo_full_name)
+            except Exception as exc:
+                self.logger.warning(f"Failed to get repo object for base versions: {exc}")
+                repo = None
+            
+            # Build structured diff for each file
+            for file in files:
+                filename = getattr(file, 'filename', 'unknown')
+                patch = getattr(file, 'patch', None)
+                status = getattr(file, 'status', 'modified')
+                additions = getattr(file, 'additions', 0)
+                deletions = getattr(file, 'deletions', 0)
+                
+                file_section = [f"\n{'='*80}"]
+                file_section.append(f"File: {filename}")
+                file_section.append(f"Status: {status} (+{additions} -{deletions})")
+                file_section.append(f"{'='*80}\n")
+                
+                # Add the patch/diff from PR (this is the standard unified diff)
+                if patch:
+                    file_section.append(f"Changes in this PR:\n```diff\n{patch}\n```\n")
+                else:
+                    file_section.append(f"No patch available (binary file or no diff)\n")
+                
+                # Try to get the base branch version for context
+                if repo and patch:  # Only fetch base if we have a patch to compare
+                    try:
+                        base_file = repo.get_contents(filename, ref=pr.base.ref)
+                        base_content = base_file.decoded_content.decode('utf-8')
+                        
+                        # Provide relevant context from base branch
+                        # Limit to reasonable size to avoid huge comments
+                        lines = base_content.split('\n')
+                        if len(lines) > 150:
+                            # Show first 150 lines as context
+                            truncated = '\n'.join(lines[:150])
+                            file_section.append(
+                                f"Base branch ({pr.base.ref}) version (first 150 of {len(lines)} lines):\n"
+                                f"```\n{truncated}\n... ({len(lines) - 150} more lines)\n```\n"
+                            )
+                        else:
+                            file_section.append(
+                                f"Base branch ({pr.base.ref}) version:\n```\n{base_content}\n```\n"
+                            )
+                    except Exception as exc:
+                        self.logger.debug(f"Could not fetch base version of {filename}: {exc}")
+                        if 'Not Found' not in str(exc):
+                            file_section.append(f"Base branch version: Could not fetch ({exc})\n")
+                        else:
+                            file_section.append(f"Base branch version: File does not exist in base branch (new file)\n")
+                
+                diff_sections.append('\n'.join(file_section))
+            
+            # Combine all sections
+            full_diff = '\n'.join(diff_sections) if diff_sections else None
+            
+            # For backward compatibility, return None for base_content (it's now included in diff)
+            return full_diff, None, None
+        
+        except Exception as exc:
+            # Catch any unexpected errors and ensure we always return a 3-tuple
+            self.logger.error(f"Unexpected error in _fetch_pr_diff_with_base_versions for PR #{pr.number}: {exc}")
+            return None, None, None
+    
+    def _fetch_pr_diff_old(self, pr, repo_full_name: str) -> tuple[Optional[str], Optional[PRRunResult]]:
+        """Return the textual diff for a PR or an early result if unavailable."""
+        diff_chunks: List[str] = []
+        try:
+            files = list(pr.get_files())
+        except Exception as exc:
+            self.logger.warning(f"Failed to get files for PR #{pr.number} – falling back to raw diff: {exc}")
+            files = []
+
+        if files:
+            for file in files:
+                patch = getattr(file, 'patch', None)
+                filename = getattr(file, 'filename', 'unknown')
+                if patch:
+                    diff_chunks.append(f"\n--- {filename} ---\n{patch}\n")
+
+        if not diff_chunks:
+            # Fallback to diff endpoint
+            try:
+                headers = {
+                    "Accept": "application/vnd.github.v3.diff",
+                    "Authorization": f"Bearer {self.github_token}",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                }
+                response = requests.get(pr.diff_url, headers=headers, timeout=20)
+                response.raise_for_status()
+                if response.text.strip():
+                    diff_chunks.append(response.text)
+            except Exception as exc:
+                tag = 'copilot:no-diff'
+                message = (
+                    "I could not retrieve the file changes for this PR automatically. "
+                    "If this PR still needs review, please ensure commits are pushed and try again."
+                )
+                self._ensure_comment_with_tag(pr, tag, message)
+                return None, PRRunResult(
+                    repo=repo_full_name,
+                    pr_number=pr.number,
+                    title=pr.title,
+                    status='skipped',
+                    details='Unable to retrieve diff contents',
+                    state_before=STATE_PENDING_REVIEW,
+                    state_after=STATE_PENDING_REVIEW,
+                    action='diff_unavailable',
+                )
+
+        if not diff_chunks:
+            # No file changes - could be a documentation-only PR or Copilot determined no changes needed
+            # Return empty diff and let PRDecider review it
+            return "", None
 
         # Return the combined diff content
         return "\n".join(diff_chunks), None
@@ -2061,7 +2426,6 @@ class JediMaster:
                 login = actor["login"]
                 if login == "copilot-swe-agent" or "copilot" in login.lower():
                     bot_id = actor["id"]
-                    self.logger.info(f"Found Copilot actor: {login} (type: {actor.get('__typename', 'Unknown')})")
                     break
             if not bot_id:
                 self.logger.warning(f"No Copilot coding agent found in suggested actors for {repo_owner}/{repo_name}")
@@ -2126,7 +2490,7 @@ class JediMaster:
         all_issues = repo.get_issues(state='open')
         
         unprocessed_issues = []
-        processed_labels = {'copilot-candidate', 'no-github-copilot'}
+        processed_labels = {'copilot-candidate', NO_COPILOT_LABEL}
         
         for issue in all_issues:
             # Skip pull requests
@@ -2246,25 +2610,25 @@ class JediMaster:
                     reasoning=result.get('reasoning')
                 )
             else:
-                # Add 'no-github-copilot' label if not suitable
+                # Add NO_COPILOT_LABEL if not suitable
                 print(f"  Issue #{issue.number}: {issue.title[:60]} -> Not suitable for Copilot")
                 try:
                     repo = issue.repository
                     no_copilot_label = None
                     for label in repo.get_labels():
-                        if label.name.lower() == 'no-github-copilot':
+                        if label.name.lower() == NO_COPILOT_LABEL:
                             no_copilot_label = label
                             break
                     if not no_copilot_label:
                         no_copilot_label = repo.create_label(
-                            name="no-github-copilot",
+                            name=NO_COPILOT_LABEL,
                             color="ededed",
                             description="Issue not suitable for GitHub Copilot"
                         )
                     issue.add_to_labels(no_copilot_label)
                 except Exception as e:
                     if self.verbose:
-                        self.logger.error(f"Could not add 'no-github-copilot' label to issue #{issue.number}: {e}")
+                        self.logger.error(f"Could not add '{NO_COPILOT_LABEL}' label to issue #{issue.number}: {e}")
                     return IssueResult(
                         repo=repo_name,
                         issue_number=issue.number,
@@ -2272,7 +2636,7 @@ class JediMaster:
                         url=issue.html_url,
                         status='error',
                         reasoning=result.get('reasoning'),
-                        error_message=f"Failed to add 'no-github-copilot' label: {e}"
+                        error_message=f"Failed to add '{NO_COPILOT_LABEL}' label: {e}"
                     )
                 return IssueResult(
                     repo=repo_name,
@@ -2556,12 +2920,22 @@ class JediMaster:
             self.logger.error(f"Failed to clean merge conflict retry labels for PR #{getattr(pr, 'number', '?')}: {exc}")
 
     def _count_total_comments(self, pr) -> int:
-        """Count the total number of comments, reviews, and review comments on a PR."""
+        """Count the total number of comments, reviews, and review comments on a PR.
+        
+        Excludes our own retry comments after Copilot errors (these are automatic retries, 
+        not real review comments).
+        """
         total_count = 0
         
         try:
-            # Count issue comments
-            total_count += pr.get_issue_comments().totalCount
+            # Count issue comments, excluding our retry comments
+            comments = list(pr.get_issue_comments())
+            for comment in comments:
+                body = (comment.body or '').strip()
+                # Skip our automated retry comments after Copilot errors
+                if body.startswith('@copilot Please retry this PR. Previous error:'):
+                    continue
+                total_count += 1
         except Exception as exc:
             self.logger.debug(f"Failed to count issue comments for PR #{pr.number}: {exc}")
         
@@ -2769,9 +3143,33 @@ class JediMaster:
                 )]
             )
 
-    async def process_repositories(self, repo_names: List[str]) -> ProcessingReport:
+    async def process_repositories(self, repo_names: List[str], skip_issue_creation: bool = False) -> ProcessingReport:
         all_results = []
         pr_results = []
+        
+        # Check if we should create new issues first (unless explicitly disabled for function_app.py)
+        create_issues = not skip_issue_creation and os.getenv('CREATE_ISSUES', '0') == '1'
+        create_issues_count = int(os.getenv('CREATE_ISSUES_COUNT', '3'))
+        
+        if create_issues:
+            self.logger.info(f"CREATE_ISSUES=1, creating {create_issues_count} new issues for each repository")
+            for repo_name in repo_names:
+                try:
+                    print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_name}...")
+                    # Use local similarity (simpler, no OpenAI embeddings required)
+                    async with CreatorAgent(
+                        self.github_token, 
+                        self.azure_foundry_endpoint, 
+                        None, 
+                        repo_name,
+                        similarity_threshold=0.5,
+                        use_openai_similarity=False
+                    ) as creator:
+                        await creator.create_issues()
+                except Exception as e:
+                    self.logger.error(f"Failed to create issues for {repo_name}: {e}")
+                    print(f"[CreatorAgent] Error creating issues for {repo_name}: {e}")
+        
         for repo_name in repo_names:
             self.logger.info(f"Processing repository: {repo_name}")
             try:
@@ -2841,7 +3239,7 @@ class JediMaster:
             batch_size: Maximum number of items to process (default: 15)
             
         Returns:
-            Dictionary with processing results and metrics
+            Dictionary with processing results and metrics, including 'work_remaining' flag
         """
         from datetime import datetime
         start_time = datetime.now()
@@ -2860,15 +3258,28 @@ class JediMaster:
             
             print(f"\nCopilot actively working on {active_copilot_count}/{max_copilot_concurrent} PRs")
             
+            # Count how many PRs need human review (all unprocessed PRs)
+            all_open_prs = list(repo.get_pulls(state='open'))
+            prs_needing_human = sum(1 for pr in all_open_prs if self._has_label(pr, HUMAN_ESCALATION_LABEL))
+            prs_processable = len(all_open_prs) - prs_needing_human
+            
             # Step 2: Process issues if we have capacity
             issue_results = []
             issues_assigned = 0
             available_slots = max(0, max_copilot_concurrent - active_copilot_count)
+            unprocessed_issues_count = 0
             
             if available_slots > 0:
                 print(f"\nStep 2/2: Processing issues (up to {available_slots} assignments available)...")
                 
                 issues = self.fetch_issues(repo_name, batch_size=batch_size)
+                # Count unprocessed issues (those without Copilot or human review label)
+                for issue in issues:
+                    if issue.pull_request:
+                        continue
+                    if not self._has_label(issue, HUMAN_ESCALATION_LABEL) and not self._has_label(issue, NO_COPILOT_LABEL):
+                        unprocessed_issues_count += 1
+                
                 for issue in issues:
                     if issue.pull_request:
                         continue
@@ -2888,6 +3299,13 @@ class JediMaster:
                 print(f"\nStep 2/2: Skipping issue processing")
                 print(f"Copilot at capacity ({active_copilot_count}/{max_copilot_concurrent})")
             
+            # Determine if there's any work remaining
+            # Work remains if:
+            # 1. There are processable PRs (not needing human review)
+            # 2. OR there are unprocessed issues (without human/no-copilot labels)
+            # 3. OR Copilot is actively working
+            work_remaining = (prs_processable > 0) or (unprocessed_issues_count > 0) or (active_copilot_count > 0)
+            
             # Calculate duration and metrics
             duration = (datetime.now() - start_time).total_seconds()
             
@@ -2897,10 +3315,15 @@ class JediMaster:
                 'duration_seconds': duration,
                 'pr_results': pr_results,
                 'issue_results': issue_results,
+                'work_remaining': work_remaining,
                 'metrics': {
                     'prs_processed': len(pr_results),
+                    'prs_total_open': len(all_open_prs),
+                    'prs_needing_human': prs_needing_human,
+                    'prs_processable': prs_processable,
                     'issues_processed': len(issue_results),
                     'issues_assigned': issues_assigned,
+                    'issues_unprocessed': unprocessed_issues_count,
                     'copilot_active_count': active_copilot_count,
                     'copilot_max_concurrent': max_copilot_concurrent,
                     'copilot_available_slots': available_slots,
@@ -2912,6 +3335,8 @@ class JediMaster:
             print(f"  - {len(pr_results)} PRs processed")
             print(f"  - {issues_assigned} issues assigned to Copilot")
             print(f"  - Duration: {duration:.1f}s")
+            if not work_remaining:
+                print(f"  - ✓ All work complete (all PRs need human review, no unprocessed issues)")
             print(f"{'='*80}")
             return report
             
@@ -2925,386 +3350,21 @@ class JediMaster:
                 'repo': repo_name,
                 'success': False,
                 'error': str(e),
-                'duration_seconds': (datetime.now() - start_time).total_seconds()
+                'duration_seconds': (datetime.now() - start_time).total_seconds(),
+                'work_remaining': True  # On error, assume work remains
             }
 
-    async def orchestrated_run(self, repo_name: str, enable_issue_creation: bool = False) -> 'OrchestrationReport':
-        """Execute an orchestrated run on a repository using LLM-based strategic planning.
-        
-        This method uses the orchestrator agent to:
-        1. Analyze repository state (issues, PRs, capacity)
-        2. Check resource constraints (API quota, Copilot capacity)
-        3. Create strategic execution plan (what workflows, in what order)
-        4. Execute the planned workflows
-        5. Report outcomes and improvements
-        
-        Args:
-            repo_name: Full repository name (owner/repo)
-            enable_issue_creation: Allow orchestrator to create new issues (default: False)
-            
-        Returns:
-            OrchestrationReport with comprehensive metrics
-        """
-        from datetime import datetime
-        from core.models import OrchestrationReport
-        from agents.orchestrator import OrchestratorAgent
-        
-        start_time = datetime.now()
-        self.logger.info(f"[Orchestrator] Starting orchestrated run for {repo_name}")
-        if enable_issue_creation:
-            self.logger.info("[Orchestrator] Issue creation ENABLED")
-        else:
-            self.logger.info("[Orchestrator] Issue creation DISABLED (use --enable-issue-creation to enable)")
-        
-        # Import orchestrator
-        async with OrchestratorAgent(
-            github=self.github,
-            azure_foundry_endpoint=self.azure_foundry_endpoint,
-            model=None,  # Will use AZURE_AI_MODEL env var
-            enable_issue_creation=enable_issue_creation,
-            github_token=self.github_token
-        ) as orchestrator:
-            
-            # Step 1: Analyze repository state (fast, no LLM)
-            self.logger.info("[Orchestrator] Step 1/4: Analyzing repository state...")
-            initial_state = orchestrator.state_analyzer.analyze(repo_name)
-            
-            self.logger.info("[Orchestrator] Step 2/4: Checking resources...")
-            initial_resources = orchestrator.resource_monitor.check_resources(repo_name)
-            
-            self.logger.info("[Orchestrator] Step 3/4: Prioritizing workload...")
-            workload = orchestrator.workload_prioritizer.prioritize(repo_name, initial_state)
-            self.logger.info(f"[Orchestrator] Workload result: pending_review_prs={workload.pending_review_prs}, changes_requested_prs={workload.changes_requested_prs}")
-            
-            # Step 2: Create execution plan (ONE LLM call)
-            self.logger.info("[Orchestrator] Step 4/4: Creating execution plan...")
-            plan = await orchestrator.create_execution_plan(
-                initial_state, initial_resources, workload
-            )
-            
-            self.logger.info(f"[Orchestrator] Strategy: {plan.strategy}")
-            for workflow in plan.workflows:
-                self.logger.info(f"  - {workflow.name} (batch={workflow.batch_size}): {workflow.reasoning}")
-            
-            # Step 3: Execute workflows
-            self.logger.info("[Orchestrator] Executing workflows...")
-            workflow_results = []
-            
-            # Track Copilot capacity dynamically during execution
-            copilot_slots_used = 0
-            
-            for workflow in plan.workflows:
-                result = await self._execute_workflow(repo_name, workflow, workload, copilot_slots_used)
-                workflow_results.append(result)
-                
-                # Update slots tracker based on workflow results
-                if workflow.name == 'review_prs':
-                    # Extract slots used from PR review workflow
-                    for pr_result in result.details:
-                        if isinstance(pr_result, PRRunResult):
-                            # Count PRs where Copilot is working or we made a new request
-                            if pr_result.action in ['skip', 'reassign_after_error', 'request_changes']:
-                                if pr_result.status in ['copilot_working', 'changes_requested']:
-                                    copilot_slots_used += 1
-                    self.logger.info(f"[Orchestrator] After review_prs: {copilot_slots_used} Copilot slots used")
-                
-                elif workflow.name == 'process_issues' and result.success:
-                    # Count newly assigned issues
-                    assigned_count = result.items_succeeded
-                    copilot_slots_used += assigned_count
-                    self.logger.info(f"[Orchestrator] After process_issues: assigned {assigned_count} issues, total {copilot_slots_used} slots used")
-            
-            # Step 4: Final analysis
-            self.logger.info("[Orchestrator] Collecting final metrics...")
-            final_state = orchestrator.state_analyzer.analyze(repo_name)
-            final_resources = orchestrator.resource_monitor.check_resources(repo_name)
-            
-            # Calculate metrics
-            duration = (datetime.now() - start_time).total_seconds()
-            backlog_reduction = (initial_state.open_issues_total + initial_state.open_prs_total) - \
-                               (final_state.open_issues_total + final_state.open_prs_total)
-            
-            # Calculate health scores
-            health_before = orchestrator.calculate_health_score(initial_state)
-            health_after = orchestrator.calculate_health_score(final_state)
-            
-            return OrchestrationReport(
-                repo=repo_name,
-                timestamp=datetime.now(),
-                initial_state=initial_state,
-                initial_resources=initial_resources,
-                prioritized_workload=workload,
-                execution_plan=plan,
-                workflow_results=workflow_results,
-                final_state=final_state,
-                final_resources=final_resources,
-                total_duration_seconds=duration,
-                backlog_reduction=backlog_reduction,
-                health_score_before=health_before,
-                health_score_after=health_after
-            )
+
     
-    async def _execute_workflow(self, repo_name: str, workflow: 'WorkflowStep', workload: 'PrioritizedWorkload', copilot_slots_used: int = 0) -> 'WorkflowResult':
-        """Execute a single workflow step.
-        
-        Args:
-            repo_name: Repository name
-            workflow: Workflow step to execute
-            workload: Prioritized workload
-            copilot_slots_used: Number of Copilot slots currently in use
-        """
-        from core.models import WorkflowResult
-        import time
-        
-        start = time.time()
-        self.logger.info(f"[Orchestrator] Executing workflow: {workflow.name} (batch={workflow.batch_size})")
-        
-        try:
-            if workflow.name == 'merge_ready_prs':
-                # Merge ready PRs (no LLM needed)
-                results = await self._execute_merge_workflow(repo_name, workflow.batch_size, workload.quick_wins)
-                return WorkflowResult(
-                    workflow_name=workflow.name,
-                    success=True,
-                    items_processed=len(results),
-                    items_succeeded=sum(1 for r in results if r.status == 'merged'),
-                    items_failed=sum(1 for r in results if r.status == 'error'),
-                    duration_seconds=time.time() - start,
-                    details=results
-                )
-            
-            elif workflow.name == 'flag_blocked_prs':
-                # Flag blocked PRs (no LLM needed)
-                results = await self._execute_flag_blocked_workflow(repo_name, workload.blocked_prs)
-                return WorkflowResult(
-                    workflow_name=workflow.name,
-                    success=True,
-                    items_processed=len(results),
-                    items_succeeded=len(results),
-                    items_failed=0,
-                    duration_seconds=time.time() - start,
-                    details=results
-                )
-            
-            elif workflow.name == 'review_prs':
-                # Review PRs (uses PRDeciderAgent LLM)
-                # Include both pending_review AND changes_requested PRs (the state machine will decide what to do)
-                combined_prs = workload.pending_review_prs + workload.changes_requested_prs
-                pr_numbers = combined_prs[:workflow.batch_size]
-                self.logger.info(f"Executing review_prs workflow with PR numbers: {pr_numbers} (pending={workload.pending_review_prs}, changes_requested={workload.changes_requested_prs})")
-                results = await self._execute_review_workflow(repo_name, pr_numbers)
-                return WorkflowResult(
-                    workflow_name=workflow.name,
-                    success=True,
-                    items_processed=len(results),
-                    items_succeeded=sum(1 for r in results if r.status != 'error'),
-                    items_failed=sum(1 for r in results if r.status == 'error'),
-                    duration_seconds=time.time() - start,
-                    details=results
-                )
-            
-            elif workflow.name == 'process_issues':
-                # Process issues (uses DeciderAgent LLM)
-                # Limit batch size by available Copilot slots to prevent overload
-                available_slots = MAX_COPILOT_SLOTS - copilot_slots_used
-                
-                if available_slots <= 0:
-                    self.logger.warning(f"[Orchestrator] Skipping process_issues: No Copilot slots available ({copilot_slots_used}/{MAX_COPILOT_SLOTS} used)")
-                    return WorkflowResult(
-                        workflow_name=workflow.name,
-                        success=True,
-                        items_processed=0,
-                        items_succeeded=0,
-                        items_failed=0,
-                        duration_seconds=0,
-                        details=[]
-                    )
-                
-                effective_batch_size = min(workflow.batch_size, available_slots)
-                if effective_batch_size < workflow.batch_size:
-                    self.logger.info(f"[Orchestrator] Limiting process_issues batch from {workflow.batch_size} to {effective_batch_size} (available slots: {available_slots}, used: {copilot_slots_used}/{MAX_COPILOT_SLOTS})")
-                
-                issue_numbers = workload.unprocessed_issues[:effective_batch_size]
-                results = await self._execute_issue_workflow(repo_name, issue_numbers)
-                return WorkflowResult(
-                    workflow_name=workflow.name,
-                    success=True,
-                    items_processed=len(results),
-                    items_succeeded=sum(1 for r in results if r.status == 'assigned'),
-                    items_failed=sum(1 for r in results if r.status == 'error'),
-                    duration_seconds=time.time() - start,
-                    details=results
-                )
-            
-            elif workflow.name == 'create_issues':
-                # Create issues (uses CreatorAgent LLM)
-                async with CreatorAgent(
-                    self.github_token,
-                    self.azure_foundry_endpoint,
-                    repo_full_name=repo_name
-                ) as creator:
-                    results = await creator.create_issues(max_issues=workflow.batch_size)
-                    return WorkflowResult(
-                        workflow_name=workflow.name,
-                        success=True,
-                        items_processed=len(results),
-                        items_succeeded=sum(1 for r in results if r.get('status') == 'created'),
-                        items_failed=sum(1 for r in results if r.get('status') == 'error'),
-                        duration_seconds=time.time() - start,
-                        details=results
-                    )
-            
-            else:
-                self.logger.warning(f"Unknown workflow: {workflow.name}")
-                return WorkflowResult(
-                    workflow_name=workflow.name,
-                    success=False,
-                    items_processed=0,
-                    items_succeeded=0,
-                    items_failed=0,
-                    duration_seconds=time.time() - start,
-                    error=f"Unknown workflow: {workflow.name}"
-                )
-                
-        except Exception as e:
-            self.logger.error(f"Workflow {workflow.name} failed: {e}")
-            return WorkflowResult(
-                workflow_name=workflow.name,
-                success=False,
-                items_processed=0,
-                items_succeeded=0,
-                items_failed=0,
-                duration_seconds=time.time() - start,
-                error=str(e)
-            )
+
     
-    async def _execute_merge_workflow(self, repo_name: str, batch_size: int, pr_numbers: List[int]) -> List[PRRunResult]:
-        """Execute merge workflow for ready PRs.
-        
-        Note: Temporarily enables manage_prs for orchestrated merges.
-        """
-        results = []
-        repo = self.github.get_repo(repo_name)
-        
-        # Temporarily enable PR management for orchestrated merges
-        original_manage_prs = self.manage_prs
-        self.manage_prs = True
-        
-        try:
-            for pr_number in pr_numbers[:batch_size]:
-                try:
-                    pr = repo.get_pull(pr_number)
-                    # Use existing state machine to handle the merge
-                    pr_results = await self._process_pr_state_machine(pr)
-                    results.extend(pr_results)
-                except Exception as e:
-                    self.logger.error(f"Failed to merge PR #{pr_number}: {e}")
-                    results.append(PRRunResult(
-                        repo=repo_name,
-                        pr_number=pr_number,
-                        title=f"PR #{pr_number}",
-                        status='error',
-                        details=str(e),
-                        action='merge_failed'
-                    ))
-        finally:
-            # Restore original setting
-            self.manage_prs = original_manage_prs
-            
-        return results
+
     
-    async def _execute_flag_blocked_workflow(self, repo_name: str, pr_numbers: List[int]) -> List[Dict[str, Any]]:
-        """Flag blocked PRs for human review."""
-        results = []
-        repo = self.github.get_repo(repo_name)
-        
-        for pr_number in pr_numbers:
-            try:
-                pr = repo.get_pull(pr_number)
-                # Remove all existing labels before adding human escalation label
-                existing_labels = list(pr.get_labels())
-                for label in existing_labels:
-                    pr.remove_from_labels(label.name)
-                # Add human escalation label
-                pr.add_to_labels(HUMAN_ESCALATION_LABEL)
-                # Add comment explaining the situation
-                pr.create_comment(
-                    f"This PR has exceeded the maximum merge retry limit and needs human review. "
-                    f"Please investigate the merge conflicts or other blocking issues."
-                )
-                self.logger.info(f"Flagged PR #{pr_number} for human review (removed {len(existing_labels)} other labels)")
-                results.append({
-                    'pr_number': pr_number,
-                    'status': 'flagged',
-                    'action': 'added human-review label'
-                })
-            except Exception as e:
-                self.logger.error(f"Failed to flag PR #{pr_number}: {e}")
-                results.append({
-                    'pr_number': pr_number,
-                    'status': 'error',
-                    'error': str(e)
-                })
-        return results
+
     
-    async def _execute_review_workflow(self, repo_name: str, pr_numbers: List[int]) -> List[PRRunResult]:
-        """Execute review workflow for pending PRs with Copilot slot tracking."""
-        results = []
-        repo = self.github.get_repo(repo_name)
-        
-        # Initialize Copilot slot tracker
-        copilot_slots_tracker = {'used': 0}
-        
-        self.logger.info(f"Review workflow received PR numbers: {pr_numbers}")
-        self.logger.info(f"Starting with MAX_COPILOT_SLOTS={MAX_COPILOT_SLOTS}")
-        
-        for pr_number in pr_numbers:
-            # Check if we've reached the slot limit
-            if copilot_slots_tracker['used'] >= MAX_COPILOT_SLOTS:
-                self.logger.info(f"Copilot slots full ({copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS}), skipping remaining {len(pr_numbers) - pr_numbers.index(pr_number)} PRs")
-                break
-            
-            try:
-                pr = repo.get_pull(pr_number)
-                self.logger.info(f"Reviewing PR #{pr_number}: draft={pr.draft}, state={pr.state}, slots_used={copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS}")
-                # Use existing state machine to handle the review
-                pr_results = await self._process_pr_state_machine(pr, copilot_slots_tracker)
-                results.extend(pr_results)
-            except Exception as e:
-                self.logger.error(f"Failed to review PR #{pr_number}: {e}")
-                results.append(PRRunResult(
-                    repo=repo_name,
-                    pr_number=pr_number,
-                    title=f"PR #{pr_number}",
-                    status='error',
-                    details=str(e),
-                    action='review_failed'
-                ))
-        
-        self.logger.info(f"Review workflow complete. Final Copilot slots used: {copilot_slots_tracker['used']}/{MAX_COPILOT_SLOTS}")
-        return results
+
     
-    async def _execute_issue_workflow(self, repo_name: str, issue_numbers: List[int]) -> List[IssueResult]:
-        """Execute issue processing workflow."""
-        results = []
-        repo = self.github.get_repo(repo_name)
-        
-        for issue_number in issue_numbers:
-            try:
-                issue = repo.get_issue(issue_number)
-                result = await self.process_issue(issue, repo_name)
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"Failed to process issue #{issue_number}: {e}")
-                results.append(IssueResult(
-                    repo=repo_name,
-                    issue_number=issue_number,
-                    title=f"Issue #{issue_number}",
-                    url='',
-                    status='error',
-                    error_message=str(e)
-                ))
-        return results
+
 
     def save_report(self, report: ProcessingReport, filename: Optional[str] = None) -> str:
         out_filename: str
@@ -3416,80 +3476,7 @@ class JediMaster:
             )
         )
 
-    def print_orchestration_report(self, report: 'OrchestrationReport'):
-        """Print a comprehensive orchestration report."""
-        from core.models import OrchestrationReport
-        
-        print("\n" + "="*80)
-        print(f"ORCHESTRATION REPORT: {report.repo}")
-        print("="*80)
-        
-        # Initial State
-        print("\nINITIAL STATE:")
-        print(f"  Issues: {report.initial_state.open_issues_total} open")
-        print(f"    - Unprocessed: {report.initial_state.open_issues_unprocessed}")
-        print(f"  PRs: {report.initial_state.open_prs_total} open")
-        print(f"    - Ready to merge: {report.initial_state.prs_ready_to_merge} (quick wins!)")
-        print(f"    - Pending review: {report.initial_state.prs_pending_review}")
-        print(f"    - Changes requested: {report.initial_state.prs_changes_requested}")
-        print(f"    - Blocked: {report.initial_state.prs_blocked}")
-        
-        # Resources
-        print("\nRESOURCES:")
-        print(f"  GitHub API: {report.initial_resources.github_api_remaining}/{report.initial_resources.github_api_limit} calls")
-        print(f"  Copilot Capacity: {report.initial_resources.copilot_active_prs}/{report.initial_resources.copilot_max_concurrent} active PRs ({report.initial_resources.copilot_available_slots} slots available)")
-        if report.initial_resources.warnings:
-            print("  Warnings:")
-            for warning in report.initial_resources.warnings:
-                print(f"    - {warning}")
-        
-        # Strategy
-        print("\nSTRATEGY:")
-        print(f"  {report.execution_plan.strategy}")
-        
-        # Workflows
-        print("\nWORKFLOWS EXECUTED:")
-        for workflow in report.execution_plan.workflows:
-            print(f"  • {workflow.name} (batch={workflow.batch_size})")
-            if workflow.reasoning:
-                print(f"    Reasoning: {workflow.reasoning}")
-        
-        if report.execution_plan.skip_workflows:
-            print("\nWORKFLOWS SKIPPED:")
-            for workflow_name in report.execution_plan.skip_workflows:
-                print(f"  • {workflow_name}")
-        
-        # Results
-        print("\nRESULTS:")
-        for result in report.workflow_results:
-            try:
-                status = "✓" if result.success else "✗"
-                workflow_name = getattr(result, 'workflow_name', str(result))
-                print(f"  {status} {workflow_name}:")
-                print(f"     Processed: {result.items_processed}, Succeeded: {result.items_succeeded}, Failed: {result.items_failed}")
-                print(f"     Duration: {result.duration_seconds:.1f}s")
-                if result.error:
-                    print(f"     Error: {result.error}")
-            except Exception as e:
-                print(f"  Error printing result: {e}, result type: {type(result)}")
-        
-        # Final State
-        print("\nFINAL STATE:")
-        print(f"  Issues: {report.final_state.open_issues_total} open (was {report.initial_state.open_issues_total})")
-        print(f"    - Unprocessed: {report.final_state.open_issues_unprocessed} (was {report.initial_state.open_issues_unprocessed})")
-        print(f"  PRs: {report.final_state.open_prs_total} open (was {report.initial_state.open_prs_total})")
-        print(f"    - Ready to merge: {report.final_state.prs_ready_to_merge} (was {report.initial_state.prs_ready_to_merge})")
-        print(f"    - Pending review: {report.final_state.prs_pending_review} (was {report.initial_state.prs_pending_review})")
-        print(f"    - Changes requested: {report.final_state.prs_changes_requested} (was {report.initial_state.prs_changes_requested})")
-        print(f"    - Blocked: {report.final_state.prs_blocked} (was {report.initial_state.prs_blocked})")
-        print(f"  Backlog reduction: {report.backlog_reduction} items")
-        
-        # Metrics
-        print("\nMETRICS:")
-        print(f"  Duration: {report.total_duration_seconds:.1f}s")
-        print(f"  Health score: {report.health_score_before:.2f} -> {report.health_score_after:.2f} ({report.health_score_after - report.health_score_before:+.2f})")
-        
-        print("\n" + "="*80)
+
 
     def print_pr_results(self, heading: str, pr_results: List[PRRunResult]):
         print(f"\n{heading}")

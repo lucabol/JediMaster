@@ -401,6 +401,7 @@ async def main():
                         print(f"[SimplifiedWorkflow] Iteration #{iteration} at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                         print(f"{'='*80}")
                     
+                    all_reports = []
                     for repo_name in repo_names:
                         if loop_minutes is None:
                             print(f"\n{'='*80}")
@@ -410,6 +411,7 @@ async def main():
                             print(f"\n--- Processing: {repo_name} ---")
                         
                         report = await jedimaster.run_simplified_workflow(repo_name)
+                        all_reports.append(report)
                         
                         # Print summary
                         if report['success']:
@@ -424,8 +426,20 @@ async def main():
                         else:
                             print(f"\n[SimplifiedWorkflow] Error processing {repo_name}: {report.get('error', 'Unknown error')}")
                     
+                    # Check if all repositories have no work remaining
+                    any_work_remaining = any(report.get('work_remaining', True) for report in all_reports)
+                    
                     # If not in loop mode, exit after one iteration
                     if loop_minutes is None:
+                        break
+                    
+                    # If no work remains on any repository, exit loop
+                    if not any_work_remaining:
+                        print(f"\n{'='*80}")
+                        print(f"[SimplifiedWorkflow] All work complete!")
+                        print(f"[SimplifiedWorkflow] All PRs need human review and no unprocessed issues remain")
+                        print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
+                        print(f"{'='*80}")
                         break
                     
                     # Calculate next run time
