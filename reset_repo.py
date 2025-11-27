@@ -302,6 +302,31 @@ def main():
     print("=" * 80)
     deleted_count = delete_all_files_except_readme(repo, github_token)
     
+    # Step 4: Add AGENTS.md file
+    print("\n" + "=" * 80)
+    print("STEP 4: Adding AGENTS.md")
+    print("=" * 80)
+    try:
+        # Read AGENTS.md from current directory
+        agents_md_path = os.path.join(os.path.dirname(__file__), 'AGENTS.md')
+        if os.path.exists(agents_md_path):
+            with open(agents_md_path, 'r', encoding='utf-8') as f:
+                agents_content = f.read()
+            
+            # Create AGENTS.md in the repository
+            repo.create_file(
+                path="AGENTS.md",
+                message="Add AGENTS.md with testing requirements for Copilot",
+                content=agents_content,
+                branch=repo.default_branch
+            )
+            print(f"  ✅ Added AGENTS.md to repository")
+        else:
+            print(f"  ⚠️  AGENTS.md not found in {os.path.dirname(__file__)}")
+            print(f"  Skipping AGENTS.md upload")
+    except Exception as e:
+        print(f"  ⚠️  Failed to add AGENTS.md: {e}")
+    
     # Summary
     print("\n" + "=" * 80)
     print("RESET COMPLETE")
@@ -311,6 +336,7 @@ def main():
     print(f"  Files/directories deleted: {deleted_count}")
     print(f"\n✅ Repository {repo_name} has been reset!")
     print("  Preserved: README.md and .github/ directory")
+    print("  Added: AGENTS.md (testing requirements)")
     print("  All other files and directories have been deleted")
     
     return 0
