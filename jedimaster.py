@@ -3295,13 +3295,9 @@ class JediMaster:
         # PRs table
         pr_stats = self.cumulative_stats['prs']
         pr_rows = [
-            ("Total Processed", pr_stats['total_processed']),
+            ("Open", pr_stats['copilot_working']),
             ("Merged", pr_stats['merged']),
-            ("Approved", pr_stats['approved']),
-            ("Changes Requested", pr_stats['changes_requested']),
             ("Human Review Needed", pr_stats['human_review']),
-            ("Copilot Working", pr_stats['copilot_working']),
-            ("Errors", pr_stats['error']),
         ]
         
         print("\nPULL REQUESTS:")
