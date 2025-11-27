@@ -181,6 +181,15 @@ class JediMaster:
             return results
 
         pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
+        
+        # Refresh PR to get latest changes before fetching diff
+        try:
+            pr.update()
+            if self.verbose:
+                self.logger.info(f"Refreshed PR #{pr.number} to get latest changes (head SHA: {pr.head.sha[:7]})")
+        except Exception as exc:
+            self.logger.warning(f"Failed to refresh PR #{pr.number} before fetching diff: {exc}")
+        
         diff_content, pre_result = self._fetch_pr_diff(pr, repo_full)
         if pre_result:
             results.append(pre_result)
@@ -810,6 +819,14 @@ class JediMaster:
         """
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
+        
+        # Refresh PR to get latest changes before reviewing
+        try:
+            pr.update()
+            if self.verbose:
+                self.logger.info(f"Refreshed PR #{pr.number} before review (head SHA: {pr.head.sha[:7]})")
+        except Exception as exc:
+            self.logger.warning(f"Failed to refresh PR #{pr.number} before review: {exc}")
         
         # Get PR diff
         pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
@@ -2668,6 +2685,27 @@ class JediMaster:
         self.verbose = verbose
         self.logger = self._setup_logger()
         
+        # Initialize cumulative statistics for orchestrate mode
+        self.cumulative_stats = {
+            'issues': {
+                'total_processed': 0,
+                'created': 0,
+                'assigned_to_copilot': 0,
+                'not_for_copilot': 0,
+                'already_assigned': 0,
+                'error': 0
+            },
+            'prs': {
+                'total_processed': 0,
+                'merged': 0,
+                'approved': 0,
+                'changes_requested': 0,
+                'human_review': 0,
+                'copilot_working': 0,
+                'error': 0
+            }
+        }
+        
         # Log masked token for verification
         token_length = len(github_token)
         if token_length > 10:
@@ -3227,11 +3265,61 @@ class JediMaster:
             )
         return report
 
+    def print_cumulative_stats(self):
+        """Print cumulative statistics for issues and PRs in table format."""
+        from reporting import format_table
+        
+        print(f"\n{'='*80}")
+        print("CUMULATIVE STATISTICS")
+        print(f"{'='*80}")
+        
+        # Issues table
+        issue_stats = self.cumulative_stats['issues']
+        issue_rows = [
+            ("Total Processed", issue_stats['total_processed']),
+            ("Created", issue_stats['created']),
+            ("Assigned to Copilot", issue_stats['assigned_to_copilot']),
+            ("Not for Copilot", issue_stats['not_for_copilot']),
+            ("Already Assigned", issue_stats['already_assigned']),
+            ("Errors", issue_stats['error']),
+        ]
+        
+        print("\nISSUES:")
+        try:
+            print(format_table(["Category", "Count"], issue_rows))
+        except UnicodeEncodeError:
+            # Fallback for Windows console
+            for category, count in issue_rows:
+                print(f"  {category:25} {count:>5}")
+        
+        # PRs table
+        pr_stats = self.cumulative_stats['prs']
+        pr_rows = [
+            ("Total Processed", pr_stats['total_processed']),
+            ("Merged", pr_stats['merged']),
+            ("Approved", pr_stats['approved']),
+            ("Changes Requested", pr_stats['changes_requested']),
+            ("Human Review Needed", pr_stats['human_review']),
+            ("Copilot Working", pr_stats['copilot_working']),
+            ("Errors", pr_stats['error']),
+        ]
+        
+        print("\nPULL REQUESTS:")
+        try:
+            print(format_table(["Category", "Count"], pr_rows))
+        except UnicodeEncodeError:
+            # Fallback for Windows console
+            for category, count in pr_rows:
+                print(f"  {category:25} {count:>5}")
+        
+        print(f"{'='*80}\n")
+
     async def run_simplified_workflow(self, repo_name: str, max_copilot_concurrent: int = 10, batch_size: int = 15) -> Dict[str, Any]:
         """
         Simplified workflow that:
-        1. Processes PRs and counts active Copilot assignments
-        2. Processes issues, assigning only if below max concurrent limit
+        1. Creates new issues if CREATE_ISSUES=1 (but doesn't assign them yet)
+        2. Processes PRs and counts active Copilot assignments
+        3. Processes issues, assigning only if below max concurrent limit
         
         Args:
             repo_name: Repository name (owner/repo)
@@ -3252,9 +3340,65 @@ class JediMaster:
         try:
             repo = self.github.get_repo(repo_name)
             
+            # Step 0: Optional issue creation (if CREATE_ISSUES=1)
+            create_issues_flag = os.getenv('CREATE_ISSUES', '0') == '1'
+            created_issues = []
+            issue_creation_failed = False
+            if create_issues_flag:
+                print(f"\nStep 0: Creating new issues...")
+                try:
+                    create_count = int(os.getenv('CREATE_ISSUES_COUNT', '3'))
+                    similarity_threshold_raw = os.getenv('SIMILARITY_THRESHOLD')
+                    use_openai_similarity = similarity_threshold_raw is not None
+                    similarity_threshold = float(similarity_threshold_raw) if similarity_threshold_raw else (0.9 if use_openai_similarity else 0.5)
+                    
+                    from creator import CreatorAgent
+                    async with CreatorAgent(
+                        self.github_token,
+                        self.azure_foundry_endpoint,
+                        None,
+                        repo_name,
+                        similarity_threshold=similarity_threshold,
+                        use_openai_similarity=use_openai_similarity
+                    ) as creator:
+                        created_issues = await creator.create_issues(max_issues=create_count, verbose=False)
+                        if len(created_issues) > 0:
+                            print(f"Created {len(created_issues)} new issues (will be processed after PRs)")
+                            # Update cumulative stats
+                            self.cumulative_stats['issues']['created'] += len(created_issues)
+                            # Wait for GitHub to index the new issues before proceeding
+                            print(f"  Waiting 10 seconds for GitHub to index new issues...")
+                            import time
+                            time.sleep(10)
+                        else:
+                            print(f"No issues created (agent may have found none suitable or all were duplicates)")
+                except Exception as e:
+                    issue_creation_failed = True
+                    self.logger.error(f"Failed to create issues: {e}")
+                    print(f"⚠️  Issue creation failed: {e}")
+            
             # Step 1: Process PRs and count active Copilot work
-            print(f"\nStep 1/2: Processing pull requests...")
+            step_num = 1 if not create_issues_flag else 1
+            print(f"\nStep {step_num}/{2 if not create_issues_flag else 3}: Processing pull requests...")
             pr_results, active_copilot_count = await self.manage_pull_requests(repo_name, batch_size=batch_size)
+            
+            # Update cumulative PR stats
+            for pr_result in pr_results:
+                self.cumulative_stats['prs']['total_processed'] += 1
+                status = pr_result.status
+                if status == 'merged':
+                    self.cumulative_stats['prs']['merged'] += 1
+                elif status == 'approved':
+                    self.cumulative_stats['prs']['approved'] += 1
+                elif status == 'changes_requested':
+                    self.cumulative_stats['prs']['changes_requested'] += 1
+                elif status == 'human_escalated':
+                    self.cumulative_stats['prs']['human_review'] += 1
+                elif status == 'error':
+                    self.cumulative_stats['prs']['error'] += 1
+            
+            # Track active Copilot work
+            self.cumulative_stats['prs']['copilot_working'] = active_copilot_count
             
             print(f"\nCopilot actively working on {active_copilot_count}/{max_copilot_concurrent} PRs")
             
@@ -3264,13 +3408,14 @@ class JediMaster:
             prs_processable = len(all_open_prs) - prs_needing_human
             
             # Step 2: Process issues if we have capacity
+            step_num = 2 if not create_issues_flag else 3
             issue_results = []
             issues_assigned = 0
             available_slots = max(0, max_copilot_concurrent - active_copilot_count)
             unprocessed_issues_count = 0
             
             if available_slots > 0:
-                print(f"\nStep 2/2: Processing issues (up to {available_slots} assignments available)...")
+                print(f"\nStep {step_num}/{2 if not create_issues_flag else 3}: Processing issues (up to {available_slots} assignments available)...")
                 
                 issues = self.fetch_issues(repo_name, batch_size=batch_size)
                 # Count unprocessed issues (those without Copilot or human review label)
@@ -3292,11 +3437,20 @@ class JediMaster:
                     result = await self.process_issue(issue, repo_name)
                     issue_results.append(result)
                     
-                    # Count successful assignments
+                    # Update cumulative issue stats
+                    self.cumulative_stats['issues']['total_processed'] += 1
                     if result.status == 'assigned':
+                        self.cumulative_stats['issues']['assigned_to_copilot'] += 1
                         issues_assigned += 1
+                    elif result.status == 'already_assigned':
+                        self.cumulative_stats['issues']['already_assigned'] += 1
+                    elif result.status == 'not_suitable' or result.status == 'labeled':
+                        self.cumulative_stats['issues']['not_for_copilot'] += 1
+                    elif result.status == 'error':
+                        self.cumulative_stats['issues']['error'] += 1
             else:
-                print(f"\nStep 2/2: Skipping issue processing")
+                step_num = 2 if not create_issues_flag else 3
+                print(f"\nStep {step_num}/{2 if not create_issues_flag else 3}: Skipping issue processing")
                 print(f"Copilot at capacity ({active_copilot_count}/{max_copilot_concurrent})")
             
             # Determine if there's any work remaining
@@ -3304,7 +3458,10 @@ class JediMaster:
             # 1. There are processable PRs (not needing human review)
             # 2. OR there are unprocessed issues (without human/no-copilot labels)
             # 3. OR Copilot is actively working
-            work_remaining = (prs_processable > 0) or (unprocessed_issues_count > 0) or (active_copilot_count > 0)
+            # 4. OR issue creation was attempted but failed (should retry)
+            # 5. OR new issues were just created (they need to be processed)
+            newly_created = len(created_issues) > 0 if create_issues_flag else False
+            work_remaining = (prs_processable > 0) or (unprocessed_issues_count > 0) or (active_copilot_count > 0) or issue_creation_failed or newly_created
             
             # Calculate duration and metrics
             duration = (datetime.now() - start_time).total_seconds()
@@ -3315,6 +3472,7 @@ class JediMaster:
                 'duration_seconds': duration,
                 'pr_results': pr_results,
                 'issue_results': issue_results,
+                'created_issues': created_issues if create_issues_flag else [],
                 'work_remaining': work_remaining,
                 'metrics': {
                     'prs_processed': len(pr_results),
@@ -3324,19 +3482,82 @@ class JediMaster:
                     'issues_processed': len(issue_results),
                     'issues_assigned': issues_assigned,
                     'issues_unprocessed': unprocessed_issues_count,
+                    'issues_created': len(created_issues),
+                    'issue_creation_failed': issue_creation_failed,
                     'copilot_active_count': active_copilot_count,
                     'copilot_max_concurrent': max_copilot_concurrent,
                     'copilot_available_slots': available_slots,
                 }
             }
             
+            # Print detailed iteration summary
             print(f"\n{'='*80}")
-            print(f"Workflow complete:")
-            print(f"  - {len(pr_results)} PRs processed")
-            print(f"  - {issues_assigned} issues assigned to Copilot")
-            print(f"  - Duration: {duration:.1f}s")
+            print(f"Workflow complete: Duration {duration:.1f}s")
+            print(f"{'='*80}")
+            
+            # Issues section
+            print(f"\nISSUES:")
+            if create_issues_flag and len(created_issues) > 0:
+                print(f"  • Created: {len(created_issues)}")
+            
+            issue_counts = {'assigned': 0, 'not_suitable': 0, 'already_assigned': 0, 'error': 0}
+            for result in issue_results:
+                if result.status == 'assigned':
+                    issue_counts['assigned'] += 1
+                elif result.status in ['not_suitable', 'labeled']:
+                    issue_counts['not_suitable'] += 1
+                elif result.status == 'already_assigned':
+                    issue_counts['already_assigned'] += 1
+                elif result.status == 'error':
+                    issue_counts['error'] += 1
+            
+            if issue_counts['assigned'] > 0:
+                print(f"  • Assigned to Copilot: {issue_counts['assigned']}")
+            if issue_counts['not_suitable'] > 0:
+                print(f"  • Marked as not for Copilot: {issue_counts['not_suitable']}")
+            if issue_counts['already_assigned'] > 0:
+                print(f"  • Already assigned: {issue_counts['already_assigned']}")
+            if issue_counts['error'] > 0:
+                print(f"  • Errors: {issue_counts['error']}")
+            
+            if len(created_issues) == 0 and len(issue_results) == 0:
+                print(f"  • No issues processed")
+            
+            # PRs section
+            print(f"\nPULL REQUESTS:")
+            pr_counts = {'merged': 0, 'approved': 0, 'changes_requested': 0, 'human_review': 0, 'error': 0}
+            for pr_result in pr_results:
+                if pr_result.status == 'merged':
+                    pr_counts['merged'] += 1
+                elif pr_result.status == 'approved':
+                    pr_counts['approved'] += 1
+                elif pr_result.status == 'changes_requested':
+                    pr_counts['changes_requested'] += 1
+                elif pr_result.status == 'human_escalated':
+                    pr_counts['human_review'] += 1
+                elif pr_result.status == 'error':
+                    pr_counts['error'] += 1
+            
+            if pr_counts['merged'] > 0:
+                print(f"  • Merged: {pr_counts['merged']}")
+            if pr_counts['approved'] > 0:
+                print(f"  • Approved: {pr_counts['approved']}")
+            if pr_counts['changes_requested'] > 0:
+                print(f"  • Changes requested: {pr_counts['changes_requested']}")
+            if pr_counts['human_review'] > 0:
+                print(f"  • Escalated to human review: {pr_counts['human_review']}")
+            if pr_counts['error'] > 0:
+                print(f"  • Errors: {pr_counts['error']}")
+            if active_copilot_count > 0:
+                print(f"  • Copilot working on: {active_copilot_count}/{max_copilot_concurrent}")
+            
+            if len(pr_results) == 0:
+                print(f"  • No PRs processed")
+            
             if not work_remaining:
-                print(f"  - ✓ All work complete (all PRs need human review, no unprocessed issues)")
+                print(f"\n✓ All work complete")
+            elif newly_created:
+                print(f"\n⏳ Newly created issues will be processed in next iteration")
             print(f"{'='*80}")
             return report
             

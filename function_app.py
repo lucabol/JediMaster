@@ -125,14 +125,14 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         repo_block = {'repo': repo_full}
         
         try:
-            # 1. Optional issue creation
+            # 1. Optional issue creation (create but don't assign yet)
             if create_issues_flag:
                 try:
                     async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                         created = await creator.create_issues(max_issues=create_count or 3)
                         repo_block['created_issues'] = created
                         summary['issue_creation'].append({'repo': repo_full, 'created': created})
-                        logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full}")
+                        logging.info(f"[AutomateRepos] Created {len(created)} issues in {repo_full} - will process after PR management")
                     
                     # Rate limit delay after issue creation
                     if rate_limit_delay > 0:
@@ -141,36 +141,7 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                     logging.error(f"[AutomateRepos] Issue creation failed for {repo_full}: {e}")
                     summary['errors'].append({'repo': repo_full, 'stage': 'create_issues', 'error': str(e)})
             
-            # 2. Issue labeling / assigning (non-PR run)
-            try:
-                async with JediMaster(
-                    github_token,
-                    azure_foundry_endpoint,
-                    just_label=just_label_flag,
-                    use_topic_filter=not use_file_filter,
-                    manage_prs=False
-                ) as jedi:
-                    # Skip issue creation in process_repositories since we handle it separately above
-                    report = await jedi.process_repositories([repo_full], skip_issue_creation=True)
-                    repo_block['issue_report'] = {
-                        'total': report.total_issues,
-                        'assigned': report.assigned,
-                        'labeled': report.labeled,
-                        'not_assigned': report.not_assigned,
-                        'already_assigned': report.already_assigned,
-                        'errors': report.errors
-                    }
-                    summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
-                    logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
-                
-                # Rate limit delay after issue processing
-                if rate_limit_delay > 0:
-                    time.sleep(rate_limit_delay)
-            except Exception as e:
-                logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
-                summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
-            
-            # 3. PR management via state machine
+            # 2. PR management via state machine (process PRs before assigning new issues)
             if process_prs_flag:
                 try:
                     # Create a separate JediMaster instance for PR processing with appropriate manage_prs setting
@@ -206,6 +177,36 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                 except Exception as e:
                     logging.error(f"[AutomateRepos] PR management failed for {repo_full}: {e}")
                     summary['errors'].append({'repo': repo_full, 'stage': 'pr_management', 'error': str(e)})
+            
+            # 3. Issue labeling / assigning (after PRs are processed)
+            try:
+                async with JediMaster(
+                    github_token,
+                    azure_foundry_endpoint,
+                    just_label=just_label_flag,
+                    use_topic_filter=not use_file_filter,
+                    manage_prs=False
+                ) as jedi:
+                    # Skip issue creation in process_repositories since we handle it separately above
+                    report = await jedi.process_repositories([repo_full], skip_issue_creation=True)
+                    repo_block['issue_report'] = {
+                        'total': report.total_issues,
+                        'assigned': report.assigned,
+                        'labeled': report.labeled,
+                        'not_assigned': report.not_assigned,
+                        'already_assigned': report.already_assigned,
+                        'errors': report.errors
+                    }
+                    summary['issue_reports'].append({'repo': repo_full, **repo_block['issue_report']})
+                    logging.info(f"[AutomateRepos] Issue processing summary {repo_full}: {repo_block['issue_report']}")
+                
+                # Rate limit delay after issue processing
+                if rate_limit_delay > 0:
+                    time.sleep(rate_limit_delay)
+            except Exception as e:
+                logging.error(f"[AutomateRepos] Issue processing failed for {repo_full}: {e}")
+                summary['errors'].append({'repo': repo_full, 'stage': 'issues', 'error': str(e)})
+            
             summary['repos_processed'] += 1
             
         except Exception as e:

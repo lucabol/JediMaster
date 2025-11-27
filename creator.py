@@ -3,6 +3,7 @@ CreatorAgent - Uses LLM to suggest and open new GitHub issues based on repositor
 """
 
 import os
+import sys
 import logging
 import json
 import numpy as np
@@ -10,8 +11,17 @@ import re
 from typing import List, Dict, Any, Optional, Set
 from github import Github
 from agent_framework.azure import AzureAIAgentClient
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, AzureCliCredential
 from reporting import format_table
+
+# Configure stdout to use UTF-8 encoding (fixes Windows console issues)
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python < 3.7
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
 
 
 class CreatorAgent:
@@ -37,14 +47,17 @@ class CreatorAgent:
             "Focus on different categories of improvements: bug fixes, new features, code quality improvements, documentation enhancements, testing, and performance optimizations. "
             "Each issue should be specific, actionable, and relevant to the code or documentation. "
             "Do not include duplicate or trivial issues. Make sure each issue is distinct and addresses different aspects of the project. "
+            "IMPORTANT: Every issue body MUST include a requirement that implementation must verify all existing tests pass and add new tests for the changes. "
+            "Include this testing requirement explicitly in the body text of each issue. "
             "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
             "IMPORTANT: Keep the 'body' field concise - use a single paragraph without newlines. Do not use multi-line strings. "
-            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Single line description'}, {'title': 'Issue 2', 'body': 'Another single line description'}]}"
+            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Single line description. Ensure all tests pass and add new tests for this functionality.'}, {'title': 'Issue 2', 'body': 'Another single line description. Verify existing tests pass and create new tests.'}]}"
         )
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._credential = DefaultAzureCredential()
+        # Exclude Azure CLI to avoid timeout on local machines
+        self._credential = DefaultAzureCredential(exclude_cli_credential=True)
         await self._credential.__aenter__()
         # Don't create shared client - will create per agent call
         return self
@@ -122,7 +135,7 @@ class CreatorAgent:
             return cleaned
         return cleaned[: limit - 1] + "…"
 
-    def _gather_repo_context(self, max_chars: int = 12000) -> str:
+    def _gather_repo_context(self, max_chars: int = 100000) -> str:
         """Gather as much repo context as possible (README, then all other files recursively) within max_chars."""
         repo = self.github.get_repo(self.repo_full_name)
         context_parts = []
@@ -137,22 +150,33 @@ class CreatorAgent:
             pass
 
         def gather_files(path=""):
-            files = []
+            """Gather files with root files first, then subdirectories."""
+            root_files = []
+            subdirs = []
+            
             try:
                 contents = repo.get_contents(path)
                 if isinstance(contents, list):
                     for item in contents:
                         # Exclude README.md (case-insensitive)
                         if item.type == 'file' and item.name.lower() != 'readme.md':
-                            files.append(item)
+                            root_files.append(item)
                         elif item.type == 'dir':
-                            files.extend(gather_files(item.path))
+                            subdirs.append(item)
                 else:
                     # It's a file, not a directory
                     if contents.type == 'file' and contents.name.lower() != 'readme.md':
-                        files.append(contents)
+                        root_files.append(contents)
             except Exception:
                 pass
+            
+            # First return all files from current directory
+            files = root_files
+            
+            # Then recursively add files from subdirectories
+            for subdir in subdirs:
+                files.extend(gather_files(subdir.path))
+            
             return files
 
         all_files = gather_files("")
@@ -436,16 +460,44 @@ class CreatorAgent:
                 # Try to parse as JSON
                 try:
                     issues = json.loads(cleaned_response)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as first_error:
                     # If JSON parsing fails, try to extract just the JSON content
-                    # Look for the outermost { } or [ ]
-                    import re
-                    json_match = re.search(r'(\{.*\}|\[.*\])', cleaned_response, re.DOTALL)
-                    if json_match:
-                        cleaned_response = json_match.group(1)
+                    # First try to find a complete JSON object by balancing braces
+                    try:
+                        # Find the first opening brace
+                        start_idx = cleaned_response.find('{')
+                        if start_idx == -1:
+                            raise ValueError("No opening brace found")
+                        
+                        # Balance braces to find the matching closing brace
+                        brace_count = 0
+                        end_idx = -1
+                        for i in range(start_idx, len(cleaned_response)):
+                            if cleaned_response[i] == '{':
+                                brace_count += 1
+                            elif cleaned_response[i] == '}':
+                                brace_count -= 1
+                                if brace_count == 0:
+                                    end_idx = i + 1
+                                    break
+                        
+                        if end_idx == -1:
+                            # Couldn't balance braces, use regex fallback
+                            json_match = re.search(r'(\{.*\})', cleaned_response, re.DOTALL)
+                            if json_match:
+                                cleaned_response = json_match.group(1)
+                            else:
+                                raise ValueError("Could not extract JSON object")
+                        else:
+                            cleaned_response = cleaned_response[start_idx:end_idx]
+                        
                         issues = json.loads(cleaned_response)
-                    else:
-                        raise
+                    except (ValueError, json.JSONDecodeError):
+                        # Re-raise the original error with full context
+                        self.logger.error(f"Failed to parse agent response as JSON: {first_error}")
+                        self.logger.error(f"Cleaned response that failed to parse (first 500 chars): {cleaned_response[:500]}")
+                        self.logger.error(f"Response around error position (char {first_error.pos}): ...{cleaned_response[max(0,first_error.pos-50):min(len(cleaned_response),first_error.pos+50)]}...")
+                        return []
                 
                 self.logger.info(f"Agent response type: {type(issues)}")
                 self.logger.debug(f"Agent response content: {issues}")
@@ -509,9 +561,11 @@ class CreatorAgent:
         for issue in issues:
             try:
                 created = repo.create_issue(title=issue['title'], body=issue.get('body', ''))
-                self.logger.info(f"Created issue: {created.html_url}")
+                # Only log to debug, don't print (will be printed in create_issues method)
+                self.logger.debug(f"Created issue: {created.html_url}")
                 results.append({
                     'title': issue['title'],
+                    'number': created.number,
                     'url': created.html_url,
                     'status': 'created'
                 })
@@ -524,93 +578,109 @@ class CreatorAgent:
                 })
         return results
 
-    async def create_issues(self, max_issues: int = 5) -> List[Dict[str, Any]]:
-        """Suggest and open new issues in the repo, checking for duplicates."""
+    async def create_issues(self, max_issues: int = 5, verbose: bool = True) -> List[Dict[str, Any]]:
+        """Suggest and open new issues in the repo, checking for duplicates.
+        
+        Args:
+            max_issues: Maximum number of issues to create
+            verbose: If True, print detailed tables. If False, print simple one-line summaries.
+        """
         existing_issues = self._get_existing_issues()
         
         suggested_issues = await self.suggest_issues(max_issues=max_issues)
         if not suggested_issues:
             self.logger.warning("No issues suggested by agent.")
-            print("\nISSUE CREATION SUMMARY")
-            summary_rows = [
-                ("Suggested", 0),
-                ("Existing open", len(existing_issues)),
-                ("Skipped (similar)", 0),
-                ("To create", 0),
-            ]
-            print(format_table(["Metric", "Count"], summary_rows))
-            print()
-            print(
-                format_table(
-                    ["Title", "Status", "Details"],
-                    [],
-                    empty_message="No issues created",
+            if verbose:
+                print("\nISSUE CREATION SUMMARY")
+                summary_rows = [
+                    ("Suggested", 0),
+                    ("Existing open", len(existing_issues)),
+                    ("Skipped (similar)", 0),
+                    ("To create", 0),
+                ]
+                print(format_table(["Metric", "Count"], summary_rows))
+                print()
+                print(
+                    format_table(
+                        ["Title", "Status", "Details"],
+                        [],
+                        empty_message="No issues created",
+                    )
                 )
-            )
             return []
         
         unique_issues, similar_issues_info = await self._check_for_similar_issues(suggested_issues, existing_issues)
         
-        summary_rows = [
-            ("Suggested", len(suggested_issues)),
-            ("Existing open", len(existing_issues)),
-            ("Skipped (similar)", len(similar_issues_info)),
-            ("To create", len(unique_issues)),
-        ]
-        print("\nISSUE CREATION SUMMARY")
-        print(format_table(["Metric", "Count"], summary_rows))
-
-        similar_rows = [
-            [
-                self._shorten(info['suggested_title'], 50),
-                f"#{info['existing_number']}",
-                f"{info['similarity_score']:.2f}",
-                self._shorten(info['existing_title'], 40),
+        if verbose:
+            summary_rows = [
+                ("Suggested", len(suggested_issues)),
+                ("Existing open", len(existing_issues)),
+                ("Skipped (similar)", len(similar_issues_info)),
+                ("To create", len(unique_issues)),
             ]
-            for info in similar_issues_info
-        ]
-        print()
-        print(
-            format_table(
-                ["Suggested", "Existing", "Similarity", "Existing Title"],
-                similar_rows,
-                empty_message="No similar issues detected",
-            )
-        )
+            print("\nISSUE CREATION SUMMARY")
+            print(format_table(["Metric", "Count"], summary_rows))
 
-        if not unique_issues:
+            similar_rows = [
+                [
+                    self._shorten(info['suggested_title'], 50),
+                    f"#{info['existing_number']}",
+                    f"{info['similarity_score']:.2f}",
+                    self._shorten(info['existing_title'], 40),
+                ]
+                for info in similar_issues_info
+            ]
             print()
             print(
                 format_table(
-                    ["Title", "Status", "Details"],
-                    [],
-                    empty_message="No issues created",
+                    ["Suggested", "Existing", "Similarity", "Existing Title"],
+                    similar_rows,
+                    empty_message="No similar issues detected",
                 )
             )
+
+        if not unique_issues:
+            if verbose:
+                print()
+                print(
+                    format_table(
+                        ["Title", "Status", "Details"],
+                        [],
+                        empty_message="No issues created",
+                    )
+                )
             return []
 
         creation_results = self.open_issues(unique_issues)
 
-        status_map = {
-            'created': 'created ✅',
-            'error': 'error ⚠️',
-        }
-        detail_rows = [
-            [
-                self._shorten(item['title'], 90),
-                status_map.get(item.get('status', ''), item.get('status', 'unknown')), 
-                self._shorten(item.get('url') or item.get('error') or ''),
+        if verbose:
+            status_map = {
+                'created': 'created ✅',
+                'error': 'error ⚠️',
+            }
+            detail_rows = [
+                [
+                    self._shorten(item['title'], 90),
+                    status_map.get(item.get('status', ''), item.get('status', 'unknown')), 
+                    self._shorten(item.get('url') or item.get('error') or ''),
+                ]
+                for item in creation_results
             ]
-            for item in creation_results
-        ]
 
-        print()
-        print(
-            format_table(
-                ["Title", "Status", "Details"],
-                detail_rows,
-                empty_message="No issues created",
+            print()
+            print(
+                format_table(
+                    ["Title", "Status", "Details"],
+                    detail_rows,
+                    empty_message="No issues created",
+                )
             )
-        )
+        else:
+            # Simple output: one line per created issue with issue number
+            for item in creation_results:
+                if item.get('status') == 'created':
+                    print(f"  ✓ Created issue #{item['number']}: {item['title']}")
+                else:
+                    print(f"  ✗ Failed to create: {item['title']} - {item.get('error', 'Unknown error')}")
 
         return creation_results

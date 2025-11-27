@@ -7,7 +7,7 @@ import logging
 import os
 from typing import Dict, Any, Optional
 from agent_framework.azure import AzureAIAgentClient
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, AzureCliCredential
 
 
 class DeciderAgent:
@@ -70,7 +70,7 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._credential = DefaultAzureCredential()
+        self._credential = DefaultAzureCredential(exclude_cli_credential=True)
         await self._credential.__aenter__()
         # Don't create shared client - will create per agent call
         return self
@@ -267,7 +267,7 @@ class PRDeciderAgent:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._credential = DefaultAzureCredential()
+        self._credential = DefaultAzureCredential(exclude_cli_credential=True)
         await self._credential.__aenter__()
         # Don't create shared client - will create per agent call
         return self

@@ -413,17 +413,8 @@ async def main():
                         report = await jedimaster.run_simplified_workflow(repo_name)
                         all_reports.append(report)
                         
-                        # Print summary
-                        if report['success']:
-                            metrics = report['metrics']
-                            print(f"\n[SimplifiedWorkflow] Summary for {repo_name}:")
-                            print(f"  Duration: {report['duration_seconds']:.1f}s")
-                            print(f"  PRs processed: {metrics['prs_processed']}")
-                            print(f"  Issues processed: {metrics['issues_processed']}")
-                            print(f"  Issues assigned: {metrics['issues_assigned']}")
-                            print(f"  Copilot capacity: {metrics['copilot_active_count']}/{metrics['copilot_max_concurrent']} active")
-                            print(f"  Available slots: {metrics['copilot_available_slots']}")
-                        else:
+                        # Brief summary only if there was an error
+                        if not report['success']:
                             print(f"\n[SimplifiedWorkflow] Error processing {repo_name}: {report.get('error', 'Unknown error')}")
                     
                     # Check if all repositories have no work remaining
@@ -440,6 +431,9 @@ async def main():
                         print(f"[SimplifiedWorkflow] All PRs need human review and no unprocessed issues remain")
                         print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
                         print(f"{'='*80}")
+                        
+                        # Print cumulative statistics before exiting
+                        jedimaster.print_cumulative_stats()
                         break
                     
                     # Calculate next run time
@@ -451,6 +445,10 @@ async def main():
                     
                     print(f"\n{'='*80}")
                     print(f"[SimplifiedWorkflow] Iteration #{iteration} complete")
+                    
+                    # Print cumulative statistics after each iteration
+                    jedimaster.print_cumulative_stats()
+                    
                     print(f"[SimplifiedWorkflow] Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                     print(f"[SimplifiedWorkflow] Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
                     print(f"{'='*80}")
@@ -461,6 +459,9 @@ async def main():
             except KeyboardInterrupt:
                 print(f"\n\n[SimplifiedWorkflow] Loop stopped by user (Ctrl+C)")
                 print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
+                
+                # Print final cumulative statistics
+                jedimaster.print_cumulative_stats()
                 return
             
             return
