@@ -3340,38 +3340,104 @@ class JediMaster:
             create_issues_flag = os.getenv('CREATE_ISSUES', '0') == '1'
             created_issues = []
             issue_creation_failed = False
+            readme_initialization_mode = False
+            
             if create_issues_flag:
                 print(f"\nStep 0: Creating new issues...")
+                
+                # Check if this is a fresh repo (only README.md or README.md + AGENTS.md)
                 try:
-                    create_count = int(os.getenv('CREATE_ISSUES_COUNT', '3'))
-                    similarity_threshold_raw = os.getenv('SIMILARITY_THRESHOLD')
-                    use_openai_similarity = similarity_threshold_raw is not None
-                    similarity_threshold = float(similarity_threshold_raw) if similarity_threshold_raw else (0.9 if use_openai_similarity else 0.5)
+                    repo_contents = list(repo.get_contents(""))
+                    # Filter to files only (not directories)
+                    files = [item for item in repo_contents if item.type == 'file']
+                    file_names = [f.name.lower() for f in files]
                     
-                    from creator import CreatorAgent
-                    async with CreatorAgent(
-                        self.github_token,
-                        self.azure_foundry_endpoint,
-                        None,
-                        repo_name,
-                        similarity_threshold=similarity_threshold,
-                        use_openai_similarity=use_openai_similarity
-                    ) as creator:
-                        created_issues = await creator.create_issues(max_issues=create_count, verbose=False)
-                        if len(created_issues) > 0:
-                            print(f"Created {len(created_issues)} new issues (will be processed after PRs)")
-                            # Update cumulative stats
-                            self.cumulative_stats['issues']['created'] += len(created_issues)
-                            # Wait for GitHub to index the new issues before proceeding
-                            print(f"  Waiting 10 seconds for GitHub to index new issues...")
-                            import time
-                            time.sleep(10)
-                        else:
-                            print(f"No issues created (agent may have found none suitable or all were duplicates)")
+                    # Check if repo has only README.md or (README.md + AGENTS.md)
+                    is_fresh_repo = (
+                        len(files) == 1 and 'readme.md' in file_names
+                    ) or (
+                        len(files) == 2 and 'readme.md' in file_names and 'agents.md' in file_names
+                    )
+                    
+                    if is_fresh_repo:
+                        print(f"  Detected fresh repository with only README.md")
+                        print(f"  Creating initial implementation issue...")
+                        readme_initialization_mode = True
+                        
+                        # Get README content
+                        readme_file = repo.get_readme()
+                        readme_content = readme_file.decoded_content.decode('utf-8')
+                        
+                        # Create the implementation issue
+                        issue_title = "Implement project as described in README.md"
+                        issue_body = (
+                            "This is a fresh repository. Please implement the complete project as accurately described in the README.md file.\n\n"
+                            "Requirements:\n"
+                            "- Follow all specifications in the README\n"
+                            "- Implement all features mentioned\n"
+                            "- Add comprehensive tests for all functionality\n"
+                            "- Ensure all existing tests pass\n"
+                            "- Follow best practices and coding standards\n\n"
+                            "README.md content:\n"
+                            "```markdown\n"
+                            f"{readme_content[:5000]}\n"  # Limit to 5000 chars
+                            "```"
+                        )
+                        
+                        created_issue = repo.create_issue(title=issue_title, body=issue_body)
+                        print(f"  ✓ Created issue #{created_issue.number}: {issue_title}")
+                        
+                        created_issues = [{
+                            'title': issue_title,
+                            'number': created_issue.number,
+                            'url': created_issue.html_url,
+                            'status': 'created'
+                        }]
+                        
+                        # Update cumulative stats
+                        self.cumulative_stats['issues']['created'] += 1
+                        
+                        # Wait for GitHub to index
+                        print(f"  Waiting 10 seconds for GitHub to index new issue...")
+                        import time
+                        time.sleep(10)
+                        
                 except Exception as e:
-                    issue_creation_failed = True
-                    self.logger.error(f"Failed to create issues: {e}")
-                    print(f"⚠️  Issue creation failed: {e}")
+                    self.logger.error(f"Failed to check repo initialization state: {e}")
+                    readme_initialization_mode = False
+                
+                # Normal issue creation if not in README initialization mode
+                if not readme_initialization_mode:
+                    try:
+                        create_count = int(os.getenv('CREATE_ISSUES_COUNT', '3'))
+                        similarity_threshold_raw = os.getenv('SIMILARITY_THRESHOLD')
+                        use_openai_similarity = similarity_threshold_raw is not None
+                        similarity_threshold = float(similarity_threshold_raw) if similarity_threshold_raw else (0.9 if use_openai_similarity else 0.5)
+                        
+                        from creator import CreatorAgent
+                        async with CreatorAgent(
+                            self.github_token,
+                            self.azure_foundry_endpoint,
+                            None,
+                            repo_name,
+                            similarity_threshold=similarity_threshold,
+                            use_openai_similarity=use_openai_similarity
+                        ) as creator:
+                            created_issues = await creator.create_issues(max_issues=create_count, verbose=False)
+                            if len(created_issues) > 0:
+                                print(f"Created {len(created_issues)} new issues (will be processed after PRs)")
+                                # Update cumulative stats
+                                self.cumulative_stats['issues']['created'] += len(created_issues)
+                                # Wait for GitHub to index the new issues before proceeding
+                                print(f"  Waiting 10 seconds for GitHub to index new issues...")
+                                import time
+                                time.sleep(10)
+                            else:
+                                print(f"No issues created (agent may have found none suitable or all were duplicates)")
+                    except Exception as e:
+                        issue_creation_failed = True
+                        self.logger.error(f"Failed to create issues: {e}")
+                        print(f"⚠️  Issue creation failed: {e}")
             
             # Step 1: Process PRs and count active Copilot work
             step_num = 1 if not create_issues_flag else 1
@@ -3456,8 +3522,9 @@ class JediMaster:
             # 3. OR Copilot is actively working
             # 4. OR issue creation was attempted but failed (should retry)
             # 5. OR new issues were just created (they need to be processed)
+            # 6. OR in README initialization mode (wait for implementation PR to be merged)
             newly_created = len(created_issues) > 0 if create_issues_flag else False
-            work_remaining = (prs_processable > 0) or (unprocessed_issues_count > 0) or (active_copilot_count > 0) or issue_creation_failed or newly_created
+            work_remaining = (prs_processable > 0) or (unprocessed_issues_count > 0) or (active_copilot_count > 0) or issue_creation_failed or newly_created or readme_initialization_mode
             
             # Calculate duration and metrics
             duration = (datetime.now() - start_time).total_seconds()
