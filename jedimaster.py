@@ -3345,62 +3345,81 @@ class JediMaster:
             if create_issues_flag:
                 print(f"\nStep 0: Creating new issues...")
                 
-                # Check if this is a fresh repo (only README.md or README.md + AGENTS.md)
+                # Check if we're in README initialization mode by looking for a marker file/issue
                 try:
-                    repo_contents = list(repo.get_contents(""))
-                    # Filter to files only (not directories)
-                    files = [item for item in repo_contents if item.type == 'file']
-                    file_names = [f.name.lower() for f in files]
+                    # Check if there's an open issue with "Implement project as described in README.md" title
+                    existing_issues = list(repo.get_issues(state='open'))
+                    readme_impl_issue = None
+                    for issue in existing_issues:
+                        if issue.title == "Implement project as described in README.md":
+                            readme_impl_issue = issue
+                            break
                     
-                    # Check if repo has only README.md or (README.md + AGENTS.md)
-                    is_fresh_repo = (
-                        len(files) == 1 and 'readme.md' in file_names
-                    ) or (
-                        len(files) == 2 and 'readme.md' in file_names and 'agents.md' in file_names
-                    )
-                    
-                    if is_fresh_repo:
-                        print(f"  Detected fresh repository with only README.md")
-                        print(f"  Creating initial implementation issue...")
+                    if readme_impl_issue:
+                        # We're still in initialization mode - PR not merged yet
+                        print(f"  README initialization in progress (issue #{readme_impl_issue.number})")
+                        print(f"  Waiting for implementation PR to be merged...")
                         readme_initialization_mode = True
+                        # Don't create any new issues
+                    else:
+                        # Check if this is a fresh repo (only README.md or README.md + AGENTS.md)
+                        repo_contents = list(repo.get_contents(""))
+                        # Filter to files only (not directories)
+                        files = [item for item in repo_contents if item.type == 'file']
+                        file_names = [f.name.lower() for f in files]
                         
-                        # Get README content
-                        readme_file = repo.get_readme()
-                        readme_content = readme_file.decoded_content.decode('utf-8')
-                        
-                        # Create the implementation issue
-                        issue_title = "Implement project as described in README.md"
-                        issue_body = (
-                            "This is a fresh repository. Please implement the complete project as accurately described in the README.md file.\n\n"
-                            "Requirements:\n"
-                            "- Follow all specifications in the README\n"
-                            "- Implement all features mentioned\n"
-                            "- Add comprehensive tests for all functionality\n"
-                            "- Ensure all existing tests pass\n"
-                            "- Follow best practices and coding standards\n\n"
-                            "README.md content:\n"
-                            "```markdown\n"
-                            f"{readme_content[:5000]}\n"  # Limit to 5000 chars
-                            "```"
+                        # Check if repo has only README.md or (README.md + AGENTS.md)
+                        is_fresh_repo = (
+                            len(files) == 1 and 'readme.md' in file_names
+                        ) or (
+                            len(files) == 2 and 'readme.md' in file_names and 'agents.md' in file_names
                         )
                         
-                        created_issue = repo.create_issue(title=issue_title, body=issue_body)
-                        print(f"  ✓ Created issue #{created_issue.number}: {issue_title}")
-                        
-                        created_issues = [{
-                            'title': issue_title,
-                            'number': created_issue.number,
-                            'url': created_issue.html_url,
-                            'status': 'created'
-                        }]
-                        
-                        # Update cumulative stats
-                        self.cumulative_stats['issues']['created'] += 1
-                        
-                        # Wait for GitHub to index
-                        print(f"  Waiting 10 seconds for GitHub to index new issue...")
-                        import time
-                        time.sleep(10)
+                        if is_fresh_repo:
+                            print(f"  Detected fresh repository with only README.md")
+                            print(f"  Creating initial implementation issue...")
+                            readme_initialization_mode = True
+                            
+                            # Get README content
+                            readme_file = repo.get_readme()
+                            readme_content = readme_file.decoded_content.decode('utf-8')
+                            
+                            # Create the implementation issue
+                            issue_title = "Implement project as described in README.md"
+                            issue_body = (
+                                "This is a fresh repository. Please implement the complete project as accurately described in the README.md file.\n\n"
+                                "Requirements:\n"
+                                "- Follow all specifications in the README\n"
+                                "- Implement all features mentioned\n"
+                                "- Add comprehensive tests for all functionality\n"
+                                "- Ensure all existing tests pass\n"
+                                "- Follow best practices and coding standards\n\n"
+                                "README.md content:\n"
+                                "```markdown\n"
+                                f"{readme_content[:5000]}\n"  # Limit to 5000 chars
+                                "```"
+                            )
+                            
+                            created_issue = repo.create_issue(title=issue_title, body=issue_body)
+                            print(f"  ✓ Created issue #{created_issue.number}: {issue_title}")
+                            
+                            created_issues = [{
+                                'title': issue_title,
+                                'number': created_issue.number,
+                                'url': created_issue.html_url,
+                                'status': 'created'
+                            }]
+                            
+                            # Update cumulative stats
+                            self.cumulative_stats['issues']['created'] += 1
+                            
+                            # Wait for GitHub to index
+                            print(f"  Waiting 10 seconds for GitHub to index new issue...")
+                            import time
+                            time.sleep(10)
+                        else:
+                            # Normal mode - repo has other files, proceed with normal issue creation
+                            readme_initialization_mode = False
                         
                 except Exception as e:
                     self.logger.error(f"Failed to check repo initialization state: {e}")
