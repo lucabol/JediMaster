@@ -823,8 +823,30 @@ class JediMaster:
         # Check if PR reviews are disabled via environment variable
         skip_pr_reviews = os.getenv('SKIP_PR_REVIEWS', '0') == '1'
         if skip_pr_reviews:
+            # If PR is draft, mark it ready first
+            if pr.draft:
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Marking as ready for review...")
+                if self._mark_pr_ready_for_review(pr):
+                    try:
+                        pr.update()  # Refresh to get updated draft status
+                    except Exception as e:
+                        self.logger.warning(f"Failed to refresh PR #{pr.number} after marking ready: {e}")
+                else:
+                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Failed to mark as ready")
+                    results.append(
+                        PRRunResult(
+                            repo=repo_full,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details='Failed to mark draft PR as ready',
+                            action='mark_ready_failed',
+                        )
+                    )
+                    return results
+            
             # Skip review process, attempt to merge directly if mergeable
-            if pr.mergeable and not pr.draft:
+            if pr.mergeable:
                 try:
                     pr.merge(merge_method='squash')
                     print(f"  PR #{pr.number}: {pr.title[:60]} -> Merged (reviews skipped)")
@@ -888,7 +910,7 @@ class JediMaster:
                                 action='merge_and_comment_failed',
                             )
                         )
-            elif not pr.mergeable and not pr.draft:
+            else:
                 # Not mergeable (probably conflicts) - reassign to Copilot
                 print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigning to Copilot (not mergeable)")
                 
@@ -935,19 +957,6 @@ class JediMaster:
                             action='comment_failed',
                         )
                     )
-            else:
-                # Draft PR - skip
-                print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (draft)")
-                results.append(
-                    PRRunResult(
-                        repo=repo_full,
-                        pr_number=pr.number,
-                        title=pr.title,
-                        status='skipped',
-                        details='Draft PR (SKIP_PR_REVIEWS=1)',
-                        action='skipped_draft',
-                    )
-                )
             return results
         
         # Refresh PR to get latest changes before reviewing
