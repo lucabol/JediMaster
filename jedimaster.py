@@ -820,6 +820,51 @@ class JediMaster:
         results: List[PRRunResult] = []
         repo_full = pr.base.repo.full_name
         
+        # Check if PR reviews are disabled via environment variable
+        skip_pr_reviews = os.getenv('SKIP_PR_REVIEWS', '0') == '1'
+        if skip_pr_reviews:
+            # Skip review process, attempt to merge directly if mergeable
+            if pr.mergeable and not pr.draft:
+                try:
+                    pr.merge(merge_method='squash')
+                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Merged (reviews skipped)")
+                    results.append(
+                        PRRunResult(
+                            repo=repo_full,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='merged',
+                            details='Merged without review (SKIP_PR_REVIEWS=1)',
+                            action='merged',
+                        )
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to merge PR #{pr.number} (reviews skipped): {e}")
+                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (merge failed)")
+                    results.append(
+                        PRRunResult(
+                            repo=repo_full,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='error',
+                            details=f'Merge failed: {str(e)[:100]}',
+                            action='merge_failed',
+                        )
+                    )
+            else:
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (not mergeable or draft)")
+                results.append(
+                    PRRunResult(
+                        repo=repo_full,
+                        pr_number=pr.number,
+                        title=pr.title,
+                        status='skipped',
+                        details='Not mergeable or draft (SKIP_PR_REVIEWS=1)',
+                        action='skipped',
+                    )
+                )
+            return results
+        
         # Refresh PR to get latest changes before reviewing
         try:
             pr.update()
