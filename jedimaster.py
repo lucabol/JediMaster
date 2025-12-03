@@ -3544,7 +3544,8 @@ class JediMaster:
                                 "- Implement all features mentioned\n"
                                 "- Add comprehensive tests for all functionality\n"
                                 "- Ensure all existing tests pass\n"
-                                "- Follow best practices and coding standards\n\n"
+                                "- Follow best practices and coding standards\n"
+                                "- **IMPORTANT**: When creating a PR, include 'Fixes #ISSUE_NUMBER' or 'Closes #ISSUE_NUMBER' in the PR description to auto-close this issue when merged\n\n"
                                 "README.md content:\n"
                                 "```markdown\n"
                                 f"{readme_content[:5000]}\n"  # Limit to 5000 chars
