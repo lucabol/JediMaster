@@ -839,28 +839,113 @@ class JediMaster:
                         )
                     )
                 except Exception as e:
+                    # Merge failed - check if it's a conflict and reassign to Copilot
                     self.logger.error(f"Failed to merge PR #{pr.number} (reviews skipped): {e}")
-                    print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (merge failed)")
+                    
+                    # Get diff/merge conflict details
+                    diff_content = None
+                    try:
+                        diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
+                        if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
+                            diff_content, _, _ = diff_result
+                            if diff_content and len(diff_content) > 10000:
+                                diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
+                    except Exception as diff_exc:
+                        self.logger.warning(f"Could not fetch diff for PR #{pr.number}: {diff_exc}")
+                    
+                    # Reassign to Copilot to fix merge conflicts
+                    comment_msg = f"@copilot The merge failed with error: {str(e)[:200]}\n\n"
+                    if diff_content:
+                        comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
+                    comment_msg += "Please fix the merge conflicts and update the PR so it can be merged."
+                    
+                    try:
+                        pr.create_issue_comment(comment_msg)
+                        if copilot_slots_tracker is not None:
+                            copilot_slots_tracker['used'] += 1
+                        
+                        print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigned to Copilot (merge conflict)")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_full,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='changes_requested',
+                                details=f'Merge failed, reassigned: {str(e)[:100]}',
+                                action='reassigned_merge_conflict',
+                            )
+                        )
+                    except Exception as comment_exc:
+                        self.logger.error(f"Failed to create comment on PR #{pr.number}: {comment_exc}")
+                        print(f"  PR #{pr.number}: {pr.title[:60]} -> Error (couldn't reassign)")
+                        results.append(
+                            PRRunResult(
+                                repo=repo_full,
+                                pr_number=pr.number,
+                                title=pr.title,
+                                status='error',
+                                details=f'Merge failed, comment failed: {str(e)[:50]}',
+                                action='merge_and_comment_failed',
+                            )
+                        )
+            elif not pr.mergeable and not pr.draft:
+                # Not mergeable (probably conflicts) - reassign to Copilot
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigning to Copilot (not mergeable)")
+                
+                # Get diff/merge conflict details
+                diff_content = None
+                try:
+                    diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
+                    if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
+                        diff_content, _, _ = diff_result
+                        if diff_content and len(diff_content) > 10000:
+                            diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
+                except Exception as diff_exc:
+                    self.logger.warning(f"Could not fetch diff for PR #{pr.number}: {diff_exc}")
+                
+                comment_msg = "@copilot This PR is not mergeable (likely merge conflicts).\n\n"
+                if diff_content:
+                    comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
+                comment_msg += "Please resolve the conflicts and update the PR."
+                
+                try:
+                    pr.create_issue_comment(comment_msg)
+                    if copilot_slots_tracker is not None:
+                        copilot_slots_tracker['used'] += 1
+                    
+                    results.append(
+                        PRRunResult(
+                            repo=repo_full,
+                            pr_number=pr.number,
+                            title=pr.title,
+                            status='changes_requested',
+                            details='Not mergeable, reassigned to Copilot',
+                            action='reassigned_not_mergeable',
+                        )
+                    )
+                except Exception as comment_exc:
+                    self.logger.error(f"Failed to create comment on PR #{pr.number}: {comment_exc}")
                     results.append(
                         PRRunResult(
                             repo=repo_full,
                             pr_number=pr.number,
                             title=pr.title,
                             status='error',
-                            details=f'Merge failed: {str(e)[:100]}',
-                            action='merge_failed',
+                            details='Not mergeable, comment failed',
+                            action='comment_failed',
                         )
                     )
             else:
-                print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (not mergeable or draft)")
+                # Draft PR - skip
+                print(f"  PR #{pr.number}: {pr.title[:60]} -> Skipped (draft)")
                 results.append(
                     PRRunResult(
                         repo=repo_full,
                         pr_number=pr.number,
                         title=pr.title,
                         status='skipped',
-                        details='Not mergeable or draft (SKIP_PR_REVIEWS=1)',
-                        action='skipped',
+                        details='Draft PR (SKIP_PR_REVIEWS=1)',
+                        action='skipped_draft',
                     )
                 )
             return results
