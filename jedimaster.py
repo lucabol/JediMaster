@@ -3486,10 +3486,31 @@ class JediMaster:
                             break
                     
                     if readme_impl_issue:
-                        # We're still in initialization mode - PR not merged yet
-                        print(f"  README initialization in progress (issue #{readme_impl_issue.number})")
-                        print(f"  Waiting for implementation PR to be merged...")
-                        readme_initialization_mode = True
+                        # Check if there's already a PR for this issue
+                        pr_exists = False
+                        try:
+                            prs = list(repo.get_pulls(state='open'))
+                            for pr in prs:
+                                # Check if PR mentions this issue in title or body
+                                pr_text = f"{pr.title} {pr.body or ''}".lower()
+                                if f"#{readme_impl_issue.number}" in pr_text or "implement project as described in readme" in pr_text.lower():
+                                    pr_exists = True
+                                    print(f"  Found PR #{pr.number} for README implementation")
+                                    break
+                        except Exception as pr_check_exc:
+                            self.logger.warning(f"Failed to check for README implementation PR: {pr_check_exc}")
+                        
+                        if pr_exists:
+                            # PR exists, will be processed in Step 1, but stay in init mode
+                            # until issue is closed (when PR is merged)
+                            print(f"  README implementation PR exists (issue #{readme_impl_issue.number})")
+                            print(f"  PR will be processed/merged normally...")
+                            readme_initialization_mode = True
+                        else:
+                            # Issue exists but no PR yet - Copilot is still working
+                            print(f"  README initialization in progress (issue #{readme_impl_issue.number})")
+                            print(f"  Waiting for Copilot to create PR...")
+                            readme_initialization_mode = True
                         # Don't create any new issues
                     else:
                         # Check if this is a fresh repo (only README.md or README.md + AGENTS.md)
