@@ -2426,7 +2426,9 @@ class JediMaster:
                                 f"Base branch ({pr.base.ref}) version:\n```\n{base_content}\n```\n"
                             )
                     except Exception as exc:
-                        self.logger.debug(f"Could not fetch base version of {filename}: {exc}")
+                        # Only log non-404 errors (404 is expected for new files)
+                        if 'Not Found' not in str(exc) and '404' not in str(exc):
+                            self.logger.debug(f"Could not fetch base version of {filename}: {exc}")
                         if 'Not Found' not in str(exc):
                             file_section.append(f"Base branch version: Could not fetch ({exc})\n")
                         else:
