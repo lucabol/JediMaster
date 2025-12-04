@@ -2406,7 +2406,8 @@ class JediMaster:
                     file_section.append(f"No patch available (binary file or no diff)\n")
                 
                 # Try to get the base branch version for context
-                if repo and patch:  # Only fetch base if we have a patch to compare
+                # Skip for new files (status == 'added') since they don't exist in base branch
+                if repo and patch and status != 'added':  # Only fetch base if file existed before
                     try:
                         base_file = repo.get_contents(filename, ref=pr.base.ref)
                         base_content = base_file.decoded_content.decode('utf-8')
@@ -2426,13 +2427,16 @@ class JediMaster:
                                 f"Base branch ({pr.base.ref}) version:\n```\n{base_content}\n```\n"
                             )
                     except Exception as exc:
-                        # Only log non-404 errors (404 is expected for new files)
+                        # Only log non-404 errors (404 is expected for new files that slip through)
                         if 'Not Found' not in str(exc) and '404' not in str(exc):
                             self.logger.debug(f"Could not fetch base version of {filename}: {exc}")
                         if 'Not Found' not in str(exc):
                             file_section.append(f"Base branch version: Could not fetch ({exc})\n")
                         else:
                             file_section.append(f"Base branch version: File does not exist in base branch (new file)\n")
+                elif status == 'added':
+                    # Explicitly note this is a new file
+                    file_section.append(f"Base branch version: File does not exist in base branch (new file)\n")
                 
                 diff_sections.append('\n'.join(file_section))
             
