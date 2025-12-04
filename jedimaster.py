@@ -2427,13 +2427,10 @@ class JediMaster:
                                 f"Base branch ({pr.base.ref}) version:\n```\n{base_content}\n```\n"
                             )
                     except Exception as exc:
-                        # Only log non-404 errors (404 is expected for new files that slip through)
-                        if 'Not Found' not in str(exc) and '404' not in str(exc):
-                            self.logger.debug(f"Could not fetch base version of {filename}: {exc}")
-                        if 'Not Found' not in str(exc):
-                            file_section.append(f"Base branch version: Could not fetch ({exc})\n")
-                        else:
-                            file_section.append(f"Base branch version: File does not exist in base branch (new file)\n")
+                        # At this point, we already filtered out 'added' files, so a 404 is unexpected
+                        # It means GitHub says the file was modified but we can't find it in base branch
+                        self.logger.warning(f"Could not fetch base version of {filename} (status={status}): {exc}")
+                        file_section.append(f"Base branch version: Could not fetch (unexpected error: {exc})\n")
                 elif status == 'added':
                     # Explicitly note this is a new file
                     file_section.append(f"Base branch version: File does not exist in base branch (new file)\n")
