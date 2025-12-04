@@ -88,6 +88,11 @@ class CreatorAgent:
         from agent_framework import ChatAgent
         from agent_framework.exceptions import ServiceResponseException
         
+        # Log endpoint and model in verbose mode
+        if hasattr(self, 'logger'):
+            self.logger.info(f"[{agent_name}] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
+            self.logger.info(f"[{agent_name}] Model: {self.model}")
+        
         # Retry logic for transient errors
         max_retries = 3
         for attempt in range(max_retries):

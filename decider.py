@@ -101,6 +101,10 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         from agent_framework import ChatAgent
         from agent_framework.exceptions import ServiceResponseException
         
+        # Log endpoint and model in verbose mode
+        self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
+        self.logger.info(f"[Agent] Model: {self.model}")
+        
         # Retry logic for transient errors
         max_retries = 3
         for attempt in range(max_retries):
@@ -297,6 +301,10 @@ class PRDeciderAgent:
         import traceback
         from agent_framework import ChatAgent
         from agent_framework.exceptions import ServiceResponseException
+        
+        # Log endpoint and model in verbose mode
+        self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
+        self.logger.info(f"[Agent] Model: {self.model}")
         
         # Retry logic for transient errors
         max_retries = 3
