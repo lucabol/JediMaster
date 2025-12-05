@@ -3567,6 +3567,20 @@ class JediMaster:
                             created_issue = repo.create_issue(title=issue_title, body=issue_body)
                             print(f"  ✓ Created issue #{created_issue.number}: {issue_title}")
                             
+                            # Immediately assign to Copilot without waiting for next iteration
+                            print(f"  Assigning issue #{created_issue.number} to Copilot...")
+                            try:
+                                # Create request to Copilot
+                                comment = f"@copilot {issue_body}"
+                                created_issue.create_comment(comment)
+                                print(f"  ✅ Assigned issue #{created_issue.number} to Copilot")
+                                
+                                # Update cumulative stats
+                                self.cumulative_stats['issues']['assigned_to_copilot'] += 1
+                            except Exception as assign_exc:
+                                self.logger.error(f"Failed to assign issue #{created_issue.number} to Copilot: {assign_exc}")
+                                print(f"  ⚠️  Failed to assign issue #{created_issue.number} to Copilot")
+                            
                             created_issues = [{
                                 'title': issue_title,
                                 'number': created_issue.number,
@@ -3578,7 +3592,7 @@ class JediMaster:
                             self.cumulative_stats['issues']['created'] += 1
                             
                             # Wait for GitHub to index
-                            print(f"  Waiting 10 seconds for GitHub to index new issue...")
+                            print(f"  Waiting 10 seconds for GitHub to index...")
                             import time
                             time.sleep(10)
                         else:
