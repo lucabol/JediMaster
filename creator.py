@@ -27,7 +27,7 @@ if sys.stdout.encoding != 'utf-8':
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
     
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
         self.repo_full_name = repo_full_name
@@ -35,6 +35,7 @@ class CreatorAgent:
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
+        self.verbose = verbose
         
         self._credential: Optional[DefaultAzureCredential] = None
         self._client: Optional[AzureAIAgentClient] = None
@@ -89,7 +90,7 @@ class CreatorAgent:
         from agent_framework.exceptions import ServiceResponseException
         
         # Log endpoint and model in verbose mode
-        if hasattr(self, 'logger'):
+        if self.verbose:
             self.logger.info(f"[{agent_name}] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
             self.logger.info(f"[{agent_name}] Model: {self.model}")
         

@@ -13,10 +13,11 @@ from azure.identity.aio import DefaultAzureCredential, AzureCliCredential
 class DeciderAgent:
     """Agent that uses LLM to decide if an issue is suitable for GitHub Copilot."""
 
-    def __init__(self, azure_foundry_endpoint: str, model: str = None):
+    def __init__(self, azure_foundry_endpoint: str, model: str = None, verbose: bool = False):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.verbose = verbose
         self.logger = logging.getLogger('jedimaster.decider')
         self._credential: Optional[DefaultAzureCredential] = None
         self._client: Optional[AzureAIAgentClient] = None
@@ -102,8 +103,10 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
         from agent_framework.exceptions import ServiceResponseException
         
         # Log endpoint and model in verbose mode
-        self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
-        self.logger.info(f"[Agent] Model: {self.model}")
+        if self.verbose:
+            self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
+        if self.verbose:
+            self.logger.info(f"[Agent] Model: {self.model}")
         
         # Retry logic for transient errors
         max_retries = 3
@@ -213,10 +216,11 @@ Be concise but thorough in your reasoning. Focus on whether the issue involves c
 class PRDeciderAgent:
     """Agent that uses LLM to decide if a PR can be checked in or needs a comment."""
 
-    def __init__(self, azure_foundry_endpoint: str, model: str = None):
+    def __init__(self, azure_foundry_endpoint: str, model: str = None, verbose: bool = False):
         # Load configuration from environment variables
         self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.verbose = verbose
         self.logger = logging.getLogger('jedimaster.prdecider')
         self._credential: Optional[DefaultAzureCredential] = None
         self._client: Optional[AzureAIAgentClient] = None
@@ -303,8 +307,10 @@ class PRDeciderAgent:
         from agent_framework.exceptions import ServiceResponseException
         
         # Log endpoint and model in verbose mode
-        self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
-        self.logger.info(f"[Agent] Model: {self.model}")
+        if self.verbose:
+            self.logger.info(f"[Agent] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
+        if self.verbose:
+            self.logger.info(f"[Agent] Model: {self.model}")
         
         # Retry logic for transient errors
         max_retries = 3
@@ -402,3 +408,4 @@ class PRDeciderAgent:
             return {
                 'comment': f'Error: {str(e)}'
             }
+

@@ -2867,8 +2867,8 @@ class JediMaster:
 
     async def __aenter__(self):
         """Async context manager entry - initialize agents."""
-        self._decider = DeciderAgent(self.azure_foundry_endpoint)
-        self._pr_decider = PRDeciderAgent(self.azure_foundry_endpoint)
+        self._decider = DeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
+        self._pr_decider = PRDeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
         await self._decider.__aenter__()
         await self._pr_decider.__aenter__()
         return self
@@ -3604,7 +3604,8 @@ class JediMaster:
                             None,
                             repo_name,
                             similarity_threshold=similarity_threshold,
-                            use_openai_similarity=use_openai_similarity
+                            use_openai_similarity=use_openai_similarity,
+                            verbose=self.verbose
                         ) as creator:
                             created_issues = await creator.create_issues(max_issues=create_count, verbose=False)
                             if len(created_issues) > 0:
