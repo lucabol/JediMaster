@@ -27,10 +27,10 @@ if sys.stdout.encoding != 'utf-8':
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
     
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_project_endpoint: str, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_project_endpoint: str, repo_full_name: str = None, azure_foundry_endpoint: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
         self.github_token = github_token
-        self.azure_foundry_endpoint = azure_foundry_endpoint
         self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
+        self.azure_foundry_endpoint = azure_foundry_endpoint  # Only needed for OpenAI embeddings similarity
         self.repo_full_name = repo_full_name
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity

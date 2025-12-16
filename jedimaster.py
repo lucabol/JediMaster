@@ -3339,10 +3339,10 @@ class JediMaster:
                     print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_name}...")
                     # Use local similarity (simpler, no OpenAI embeddings required)
                     async with CreatorAgent(
-                        self.github_token, 
-                        self.azure_foundry_endpoint,
+                        self.github_token,
                         self.azure_foundry_project_endpoint,
                         repo_name,
+                        azure_foundry_endpoint=self.azure_foundry_endpoint,
                         similarity_threshold=0.5,
                         use_openai_similarity=False
                     ) as creator:
@@ -3615,9 +3615,9 @@ class JediMaster:
                         from creator import CreatorAgent
                         async with CreatorAgent(
                             self.github_token,
-                            self.azure_foundry_endpoint,
                             self.azure_foundry_project_endpoint,
                             repo_name,
+                            azure_foundry_endpoint=self.azure_foundry_endpoint,
                             similarity_threshold=similarity_threshold,
                             use_openai_similarity=use_openai_similarity,
                             verbose=self.verbose
@@ -4037,7 +4037,7 @@ async def main():
 
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only needed for OpenAI embeddings similarity
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
     if not github_token:
@@ -4080,7 +4080,7 @@ async def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                async with CreatorAgent(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                     await creator.create_issues()
             return 0
 
@@ -4134,7 +4134,7 @@ async def main():
 async def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
     if not github_token or not azure_foundry_project_endpoint:
         return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
@@ -4157,7 +4157,7 @@ async def process_issues_api(input_data: dict) -> dict:
 async def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
     if not github_token or not azure_foundry_project_endpoint:
         return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
