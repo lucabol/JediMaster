@@ -298,9 +298,10 @@ async def main():
     # Get credentials from environment (already loaded at start of main())
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
-    if not github_token or not azure_foundry_endpoint:
-        print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_ENDPOINT environment variables")
+    if not github_token or not azure_foundry_project_endpoint:
+        print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_PROJECT_ENDPOINT environment variables")
         print("Either in a .env file or as system environment variables")
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return
@@ -321,6 +322,7 @@ async def main():
     async with JediMaster(
         github_token,
         azure_foundry_endpoint,
+        azure_foundry_project_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
         manage_prs=getattr(args, 'manage_prs', False),
