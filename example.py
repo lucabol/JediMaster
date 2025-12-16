@@ -314,7 +314,7 @@ async def main():
         repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-            async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+            async with CreatorAgent(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                 await creator.create_issues(max_issues=args.create_issues_count)
         return
 

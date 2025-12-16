@@ -3340,8 +3340,8 @@ class JediMaster:
                     # Use local similarity (simpler, no OpenAI embeddings required)
                     async with CreatorAgent(
                         self.github_token, 
-                        self.azure_foundry_endpoint, 
-                        None, 
+                        self.azure_foundry_endpoint,
+                        self.azure_foundry_project_endpoint,
                         repo_name,
                         similarity_threshold=0.5,
                         use_openai_similarity=False
@@ -3616,7 +3616,7 @@ class JediMaster:
                         async with CreatorAgent(
                             self.github_token,
                             self.azure_foundry_endpoint,
-                            None,
+                            self.azure_foundry_project_endpoint,
                             repo_name,
                             similarity_threshold=similarity_threshold,
                             use_openai_similarity=use_openai_similarity,
@@ -4080,7 +4080,7 @@ async def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                async with CreatorAgent(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                     await creator.create_issues()
             return 0
 
