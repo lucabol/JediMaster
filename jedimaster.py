@@ -2817,9 +2817,10 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_project_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
         self.github = Github(github_token)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
@@ -2867,8 +2868,8 @@ class JediMaster:
 
     async def __aenter__(self):
         """Async context manager entry - initialize agents."""
-        self._decider = DeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
-        self._pr_decider = PRDeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
+        self._decider = DeciderAgent(self.azure_foundry_project_endpoint, verbose=self.verbose)
+        self._pr_decider = PRDeciderAgent(self.azure_foundry_project_endpoint, verbose=self.verbose)
         await self._decider.__aenter__()
         await self._pr_decider.__aenter__()
         return self
@@ -4037,6 +4038,7 @@ async def main():
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
     if not github_token:
         print("Error: GITHUB_TOKEN environment variable is required")
@@ -4050,8 +4052,8 @@ async def main():
 
     print(f"Using GITHUB_TOKEN: {_mask_token(github_token)}")
 
-    if not azure_foundry_endpoint:
-        print("Error: AZURE_AI_FOUNDRY_ENDPOINT environment variable is required")
+    if not azure_foundry_project_endpoint:
+        print("Error: AZURE_AI_FOUNDRY_PROJECT_ENDPOINT environment variable is required")
         print("Set it in .env file or as a system environment variable")
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return 1
@@ -4085,6 +4087,7 @@ async def main():
         async with JediMaster(
             github_token,
             azure_foundry_endpoint,
+            azure_foundry_project_endpoint,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
             manage_prs=args.manage_prs
@@ -4132,8 +4135,9 @@ async def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
-    if not github_token or not azure_foundry_endpoint:
-        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
+    if not github_token or not azure_foundry_project_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
@@ -4144,7 +4148,7 @@ async def process_issues_api(input_data: dict) -> dict:
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_repositories(repo_names)
             return asdict(report)
     except Exception as e:
@@ -4154,8 +4158,9 @@ async def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
     azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
-    if not github_token or not azure_foundry_endpoint:
-        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
+    if not github_token or not azure_foundry_project_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
@@ -4166,7 +4171,7 @@ async def process_user_api(input_data: dict) -> dict:
         return {"error": "Missing username in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_user(username)
             return asdict(report)
     except Exception as e:

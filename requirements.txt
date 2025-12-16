@@ -10,3 +10,4 @@ azure-identity>=1.15.0
 python-dotenv>=1.0.0
 PyGithub>=1.59.0
 numpy>=1.21.0
+azure-ai-projects>=2.0.0b1
