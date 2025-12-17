@@ -3095,35 +3095,116 @@ class JediMaster:
         Perform a reverse merge: merge the base branch into the PR's head branch.
         This creates conflict markers in the PR branch files that Copilot can resolve.
         
+        Uses local git operations to create a merge commit with conflict markers,
+        then pushes it back to the PR branch.
+        
         Returns:
             Tuple of (success: bool, error_message: Optional[str])
         """
+        import tempfile
+        import subprocess
+        import shutil
+        from pathlib import Path
+        
         try:
             repo = pr.base.repo
             base_branch = pr.base.ref
             head_branch = pr.head.ref
-            head_sha = pr.head.sha
+            clone_url = repo.clone_url.replace('https://github.com/', f'https://{self.github_token}@github.com/')
             
             self.logger.info(f"Performing reverse merge: merging {base_branch} into {head_branch} for PR #{pr.number}")
             
-            # Perform the merge using GitHub API
-            try:
-                merge_result = repo.merge(
-                    head_branch,  # The branch to merge into
-                    base_branch,  # The branch to merge from
-                    f"Merge {base_branch} into {head_branch} to resolve conflicts"
-                )
+            # Create a temporary directory for the git operations
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmppath = Path(tmpdir)
                 
-                self.logger.info(f"Successfully merged {base_branch} into {head_branch} for PR #{pr.number}")
-                return (True, None)
-                
-            except GithubException as e:
-                if e.status == 409:  # Merge conflict
-                    self.logger.info(f"Merge conflict occurred as expected during reverse merge for PR #{pr.number}")
-                    # This is actually what we want - conflict markers are now in the branch
-                    return (True, None)
-                else:
-                    error_msg = f"GitHub API error during reverse merge: {e.status} {e.data.get('message', str(e))}"
+                try:
+                    # Clone the repository (shallow clone for speed)
+                    self.logger.debug(f"Cloning {repo_full} to {tmppath}")
+                    subprocess.run(
+                        ['git', 'clone', '--depth=1', '--no-single-branch', clone_url, str(tmppath)],
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    # Checkout the PR branch
+                    self.logger.debug(f"Checking out {head_branch}")
+                    subprocess.run(
+                        ['git', 'checkout', head_branch],
+                        cwd=tmppath,
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    # Configure git user for the merge commit
+                    subprocess.run(
+                        ['git', 'config', 'user.name', 'JediMaster'],
+                        cwd=tmppath,
+                        check=True
+                    )
+                    subprocess.run(
+                        ['git', 'config', 'user.email', 'jedimaster@bot.github.com'],
+                        cwd=tmppath,
+                        check=True
+                    )
+                    
+                    # Attempt to merge base branch into head branch
+                    self.logger.debug(f"Merging {base_branch} into {head_branch}")
+                    result = subprocess.run(
+                        ['git', 'merge', base_branch, '-m', f'Merge {base_branch} into {head_branch} for conflict resolution'],
+                        cwd=tmppath,
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if result.returncode == 0:
+                        # Merge succeeded without conflicts
+                        self.logger.info(f"Merge succeeded without conflicts for PR #{pr.number}")
+                        # Push the merge commit
+                        subprocess.run(
+                            ['git', 'push', 'origin', head_branch],
+                            cwd=tmppath,
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        return (True, None)
+                    else:
+                        # Merge conflicts occurred - this is what we want!
+                        self.logger.info(f"Merge conflicts detected as expected for PR #{pr.number}")
+                        
+                        # Add all files (including those with conflict markers)
+                        subprocess.run(
+                            ['git', 'add', '-A'],
+                            cwd=tmppath,
+                            check=True
+                        )
+                        
+                        # Commit the merge with conflict markers
+                        subprocess.run(
+                            ['git', 'commit', '--no-edit', '-m', f'Merge {base_branch} into {head_branch} with conflicts for resolution'],
+                            cwd=tmppath,
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        # Push the merge commit with conflicts
+                        subprocess.run(
+                            ['git', 'push', 'origin', head_branch],
+                            cwd=tmppath,
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        self.logger.info(f"Successfully pushed merge conflicts to {head_branch} for PR #{pr.number}")
+                        return (True, None)
+                        
+                except subprocess.CalledProcessError as e:
+                    error_msg = f"Git command failed: {e.stderr if e.stderr else str(e)}"
                     self.logger.error(error_msg)
                     return (False, error_msg)
                     
