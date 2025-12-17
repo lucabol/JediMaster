@@ -3533,8 +3533,35 @@ class JediMaster:
                             # Issue exists but no PR yet - Copilot is still working
                             print(f"  README initialization in progress (issue #{readme_impl_issue.number})")
                             print(f"  Waiting for Copilot to create PR...")
-                            readme_initialization_mode = True
-                        # Don't create any new issues
+                            print("\n⏭️  Skipping PR and issue processing (waiting for README implementation)")
+                            duration = (datetime.now() - start_time).total_seconds()
+                            
+                            print("\n" + "="*80)
+                            print(f"Workflow complete: Duration {duration:.1f}s")
+                            print("="*80)
+                            return {
+                                'repo': repo_name,
+                                'success': True,
+                                'duration_seconds': duration,
+                                'pr_results': [],
+                                'issue_results': [],
+                                'created_issues': [created_issue],
+                                'work_remaining': True,
+                                'metrics': {
+                                    'prs_processed': 0,
+                                    'prs_total_open': 0,
+                                    'prs_needing_human': 0,
+                                    'prs_processable': 0,
+                                    'issues_processed': 0,
+                                    'issues_assigned': 1,
+                                    'issues_unprocessed': 0,
+                                    'issues_created': 1,
+                                    'issue_creation_failed': 0,
+                                    'copilot_active_count': 0,
+                                    'copilot_max_concurrent': max_copilot_concurrent,
+                                    'copilot_available_slots': max_copilot_concurrent - 1,
+                                }
+                            }
                     else:
                         # Check if this is a fresh repo (only README.md or README.md + AGENTS.md)
                         repo_contents = list(repo.get_contents(""))
@@ -3581,16 +3608,31 @@ class JediMaster:
                             # Immediately assign to Copilot without waiting for next iteration
                             print(f"  Assigning issue #{created_issue.number} to Copilot...")
                             try:
-                                # Create request to Copilot
-                                comment = f"@copilot {issue_body}"
-                                created_issue.create_comment(comment)
-                                print(f"  ✅ Assigned issue #{created_issue.number} to Copilot")
+                                repo_full_name = repo.full_name.split('/')
+                                repo_owner = repo_full_name[0]
+                                repo_name_only = repo_full_name[1]
+                                issue_id, bot_id, lookup_error = self._get_issue_id_and_bot_id(repo_owner, repo_name_only, created_issue.number)
                                 
-                                # Update cumulative stats
-                                self.cumulative_stats['issues']['assigned_to_copilot'] += 1
+                                if issue_id and bot_id:
+                                    success, assign_error = self._assign_issue_via_graphql(issue_id, bot_id)
+                                    if success:
+                                        # Add label only on successful assignment
+                                        created_issue.add_to_labels('copilot-candidate')
+                                        print(f"  ✅ Assigned issue #{created_issue.number} to Copilot")
+                                        
+                                        # Update cumulative stats
+                                        self.cumulative_stats['issues']['assigned_to_copilot'] += 1
+                                    else:
+                                        assign_error = assign_error or "Unknown GraphQL assignment error"
+                                        self.logger.error(f"GraphQL assignment failed for issue #{created_issue.number}: {assign_error}")
+                                        print(f"  ⚠️  Failed to assign issue #{created_issue.number} to Copilot: {assign_error}")
+                                else:
+                                    lookup_error = lookup_error or "Failed to get issue/bot IDs"
+                                    self.logger.error(f"Failed to lookup IDs for issue #{created_issue.number}: {lookup_error}")
+                                    print(f"  ⚠️  Failed to assign issue #{created_issue.number} to Copilot: {lookup_error}")
                             except Exception as assign_exc:
                                 self.logger.error(f"Failed to assign issue #{created_issue.number} to Copilot: {assign_exc}")
-                                print(f"  ⚠️  Failed to assign issue #{created_issue.number} to Copilot")
+                                print(f"  ⚠️  Failed to assign issue #{created_issue.number} to Copilot: {assign_exc}")
                             
                             created_issues = [{
                                 'title': issue_title,
@@ -3601,11 +3643,43 @@ class JediMaster:
                             
                             # Update cumulative stats
                             self.cumulative_stats['issues']['created'] += 1
+                            self.cumulative_stats['issues']['total_processed'] += 1
                             
                             # Wait for GitHub to index
                             print(f"  Waiting 10 seconds for GitHub to index...")
                             import time
                             time.sleep(10)
+                            
+                            # Skip PR and issue processing - just return
+                            print("\n⏭️  Skipping PR and issue processing (waiting for README implementation)")
+                            duration = (datetime.now() - start_time).total_seconds()
+                            
+                            print("\n" + "="*80)
+                            print(f"Workflow complete: Duration {duration:.1f}s")
+                            print("="*80)
+                            return {
+                                'repo': repo_name,
+                                'success': True,
+                                'duration_seconds': duration,
+                                'pr_results': [],
+                                'issue_results': [],
+                                'created_issues': created_issues,
+                                'work_remaining': True,
+                                'metrics': {
+                                    'prs_processed': 0,
+                                    'prs_total_open': 0,
+                                    'prs_needing_human': 0,
+                                    'prs_processable': 0,
+                                    'issues_processed': 0,
+                                    'issues_assigned': 1,
+                                    'issues_unprocessed': 0,
+                                    'issues_created': 1,
+                                    'issue_creation_failed': 0,
+                                    'copilot_active_count': 0,
+                                    'copilot_max_concurrent': max_copilot_concurrent,
+                                    'copilot_available_slots': max_copilot_concurrent - 1,
+                                }
+                            }
                         else:
                             # Normal mode - repo has other files, proceed with normal issue creation
                             readme_initialization_mode = False

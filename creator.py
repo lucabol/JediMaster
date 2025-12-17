@@ -55,7 +55,8 @@ class CreatorAgent:
         
         # Get the CreatorAgent from Foundry
         self._agent = self._project_client.agents.get(agent_name="CreatorAgent")
-        self.logger.info(f"Retrieved CreatorAgent from Foundry: {self._agent.id}")
+        if self.verbose:
+            self.logger.info(f"Retrieved CreatorAgent from Foundry: {self._agent.id}")
         
         # Get OpenAI client for invoking the agent
         self._openai_client = self._project_client.get_openai_client()
@@ -481,12 +482,14 @@ class CreatorAgent:
                         self.logger.error(f"Response around error position (char {first_error.pos}): ...{cleaned_response[max(0,first_error.pos-50):min(len(cleaned_response),first_error.pos+50)]}...")
                         return []
                 
-                self.logger.info(f"Agent response type: {type(issues)}")
+                if self.verbose:
+                    self.logger.info(f"Agent response type: {type(issues)}")
                 self.logger.debug(f"Agent response content: {issues}")
                 
                 # First check if it's a dict with an 'issues' key (our expected format)
                 if isinstance(issues, dict) and 'issues' in issues and isinstance(issues['issues'], list):
-                    self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
+                    if self.verbose:
+                        self.logger.info(f"Found issues in 'issues' key: {len(issues['issues'])} items")
                     return issues['issues'][:max_issues]
                 
                 # Fallback: Expect a JSON array of issues (legacy format)
@@ -496,7 +499,8 @@ class CreatorAgent:
                     # Handle other wrapper objects like {"suggestions": [...]} or {"items": [...]}
                     for key in ['suggestions', 'items']:
                         if key in issues and isinstance(issues[key], list):
-                            self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
+                            if self.verbose:
+                                self.logger.info(f"Found issues in key '{key}': {len(issues[key])} items")
                             return issues[key][:max_issues]
                     
                     # Handle dict with numeric string keys (e.g., {"0": {...}, "1": {...}})

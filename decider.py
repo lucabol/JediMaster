@@ -35,7 +35,8 @@ class DeciderAgent:
         
         # Get the DeciderAgent from Foundry
         self._agent = self._project_client.agents.get(agent_name="DeciderAgent")
-        self.logger.info(f"Retrieved DeciderAgent from Foundry: {self._agent.id}")
+        if self.verbose:
+            self.logger.info(f"Retrieved DeciderAgent from Foundry: {self._agent.id}")
         
         # Get OpenAI client for invoking the agent
         self._openai_client = self._project_client.get_openai_client()
@@ -226,7 +227,8 @@ class PRDeciderAgent:
         
         # Get the PRDeciderAgent from Foundry
         self._agent = self._project_client.agents.get(agent_name="PRDeciderAgent")
-        self.logger.info(f"Retrieved PRDeciderAgent from Foundry: {self._agent.id}")
+        if self.verbose:
+            self.logger.info(f"Retrieved PRDeciderAgent from Foundry: {self._agent.id}")
         
         # Get OpenAI client for invoking the agent
         self._openai_client = self._project_client.get_openai_client()

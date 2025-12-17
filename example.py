@@ -452,7 +452,8 @@ async def main():
                     # Print cumulative statistics after each iteration
                     jedimaster.print_cumulative_stats()
                     
-                    print(f"Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                    local_next_run = next_run.replace(tzinfo=timezone.utc).astimezone()
+                    print(f"Next run at: {local_next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
                     print(f"Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
                     print(f"{'='*80}")
                     
