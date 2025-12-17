@@ -429,8 +429,12 @@ class CreatorAgent:
             try:
                 # Clean up the response text (remove any markdown code blocks)
                 cleaned_response = result_text.strip()
+                # Remove ```json or ``` prefix
                 if cleaned_response.startswith('```json'):
                     cleaned_response = cleaned_response[7:]
+                elif cleaned_response.startswith('```'):
+                    cleaned_response = cleaned_response[3:]
+                # Remove ``` suffix
                 if cleaned_response.endswith('```'):
                     cleaned_response = cleaned_response[:-3]
                 cleaned_response = cleaned_response.strip()

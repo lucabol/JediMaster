@@ -94,8 +94,11 @@ class DeciderAgent:
             # Use helper method to run agent
             result_text = await self._run_agent(prompt)
             
+            # Strip markdown formatting if present
+            cleaned_text = self._strip_markdown_json(result_text)
+            
             # Parse JSON response
-            parsed_result = json.loads(result_text)
+            parsed_result = json.loads(cleaned_text)
             self.logger.debug(f"Parsed agent response: {parsed_result}")
             
             if 'decision' not in parsed_result or 'reasoning' not in parsed_result:
@@ -226,6 +229,19 @@ class PRDeciderAgent:
         self.logger.debug(f"Agent raw response: {result_text[:500]}...")
         return result_text
 
+    def _strip_markdown_json(self, text: str) -> str:
+        """Strip markdown code block formatting from JSON response."""
+        text = text.strip()
+        # Remove ```json or ``` prefix
+        if text.startswith('```json'):
+            text = text[7:]
+        elif text.startswith('```'):
+            text = text[3:]
+        # Remove ``` suffix
+        if text.endswith('```'):
+            text = text[:-3]
+        return text.strip()
+
     async def evaluate_pr(self, pr_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub PR using the Foundry PRDeciderAgent."""
         try:
@@ -235,8 +251,11 @@ class PRDeciderAgent:
             # Use helper method to run agent
             result_text = await self._run_agent(prompt)
             
+            # Strip markdown formatting if present
+            cleaned_text = self._strip_markdown_json(result_text)
+            
             # Parse JSON response
-            parsed_result = json.loads(result_text)
+            parsed_result = json.loads(cleaned_text)
             self.logger.debug(f"Parsed agent response: {parsed_result}")
             
             if 'decision' not in parsed_result or 'comment' not in parsed_result:
