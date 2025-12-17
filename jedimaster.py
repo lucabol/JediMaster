@@ -866,25 +866,21 @@ class JediMaster:
                         )
                     )
                 except Exception as e:
-                    # Merge failed - check if it's a conflict and reassign to Copilot
+                    # Merge failed - perform reverse merge and reassign to Copilot
                     self.logger.error(f"Failed to merge PR #{pr.number} (reviews skipped): {e}")
                     
-                    # Get diff/merge conflict details
-                    diff_content = None
-                    try:
-                        diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
-                        if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
-                            diff_content, _, _ = diff_result
-                            if diff_content and len(diff_content) > 10000:
-                                diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
-                    except Exception as diff_exc:
-                        self.logger.warning(f"Could not fetch diff for PR #{pr.number}: {diff_exc}")
+                    # Perform reverse merge to create conflict markers in the branch
+                    success, error_msg = self._perform_reverse_merge(pr, repo_full)
                     
-                    # Reassign to Copilot to fix merge conflicts
-                    comment_msg = f"@copilot The merge failed with error: {str(e)[:200]}\n\n"
-                    if diff_content:
-                        comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
-                    comment_msg += "Please fix the merge conflicts and update the PR so it can be merged."
+                    if success:
+                        # Reassign to Copilot to fix the conflict markers
+                        comment_msg = f"@copilot The merge failed due to conflicts. I've merged {pr.base.ref} into {pr.head.ref} to create conflict markers in the files.\n\n"
+                        comment_msg += "Please resolve all conflict markers (<<<<<<< HEAD, =======, >>>>>>>) in the affected files and push the changes."
+                    else:
+                        # Fallback if reverse merge fails
+                        comment_msg = f"@copilot The merge failed with error: {str(e)[:200]}\n\n"
+                        comment_msg += f"Attempted to perform a reverse merge but it failed: {error_msg}\n\n"
+                        comment_msg += "Please manually resolve the merge conflicts and update the PR so it can be merged."
                     
                     try:
                         pr.create_issue_comment(comment_msg)
@@ -898,7 +894,7 @@ class JediMaster:
                                 pr_number=pr.number,
                                 title=pr.title,
                                 status='changes_requested',
-                                details=f'Merge failed, reassigned: {str(e)[:100]}',
+                                details=f'Merge failed, reverse merge {"succeeded" if success else "failed"}, reassigned: {str(e)[:100]}',
                                 action='reassigned_merge_conflict',
                             )
                         )
@@ -919,21 +915,16 @@ class JediMaster:
                 # Not mergeable (probably conflicts) - reassign to Copilot
                 print(f"  PR #{pr.number}: {pr.title[:60]} -> Reassigning to Copilot (not mergeable)")
                 
-                # Get diff/merge conflict details
-                diff_content = None
-                try:
-                    diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
-                    if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
-                        diff_content, _, _ = diff_result
-                        if diff_content and len(diff_content) > 10000:
-                            diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
-                except Exception as diff_exc:
-                    self.logger.warning(f"Could not fetch diff for PR #{pr.number}: {diff_exc}")
+                # Perform reverse merge to create conflict markers in the branch
+                success, error_msg = self._perform_reverse_merge(pr, repo_full)
                 
-                comment_msg = "@copilot This PR is not mergeable (likely merge conflicts).\n\n"
-                if diff_content:
-                    comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
-                comment_msg += "Please resolve the conflicts and update the PR."
+                if success:
+                    comment_msg = f"@copilot This PR is not mergeable due to conflicts. I've merged {pr.base.ref} into {pr.head.ref} to create conflict markers in the files.\n\n"
+                    comment_msg += "Please resolve all conflict markers (<<<<<<< HEAD, =======, >>>>>>>) in the affected files and push the changes."
+                else:
+                    comment_msg = "@copilot This PR is not mergeable (likely merge conflicts).\n\n"
+                    comment_msg += f"Attempted to perform a reverse merge but it failed: {error_msg}\n\n"
+                    comment_msg += "Please manually resolve the conflicts and update the PR."
                 
                 try:
                     pr.create_issue_comment(comment_msg)
@@ -1211,21 +1202,6 @@ class JediMaster:
             # Merge failed - get conflict details and reassign to Copilot
             error_msg = str(exc)
             
-            # Get the diff/merge conflict details with base branch context
-            diff_content = None
-            try:
-                diff_result = self._fetch_pr_diff_with_base_versions(pr, repo_full)
-                if diff_result and isinstance(diff_result, tuple) and len(diff_result) >= 3:
-                    diff_content, _, _ = diff_result
-                    if diff_content:
-                        # Limit diff size to avoid huge comments (increased to 10000 for structured format)
-                        if len(diff_content) > 10000:
-                            diff_content = diff_content[:10000] + "\n\n... (diff truncated, too large)"
-                else:
-                    self.logger.warning(f"PR #{pr.number}: _fetch_pr_diff_with_base_versions returned unexpected value: {diff_result}")
-            except Exception as diff_exc:
-                self.logger.warning(f"Failed to fetch diff for PR #{pr.number}: {diff_exc}")
-            
             # Check comment limit before reassigning
             total_comments = self._count_total_comments(pr)
             if total_comments > self.max_comments:
@@ -1235,12 +1211,9 @@ class JediMaster:
                     
                     escalation_msg = (
                         f"This PR is approved but merge failed after {total_comments} attempts. "
-                        f"Manual intervention required.\n\n**Merge error:** {error_msg}"
+                        f"Manual intervention required.\n\n**Merge error:** {error_msg}\n\n"
+                        f"Note: Reverse merge (merging {pr.base.ref} into {pr.head.ref}) was attempted to create conflict markers for resolution."
                     )
-                    
-                    # Include diff with base context if available
-                    if diff_content:
-                        escalation_msg += f"\n\n**Merge conflict details:**\n{diff_content}"
                     
                     pr.create_issue_comment(escalation_msg)
                 print(f"  PR #{pr.number}: {pr.title[:60]} -> Escalated (too many merge attempts)")
@@ -1273,16 +1246,23 @@ class JediMaster:
             
             # Reassign to Copilot with full error details
             try:
-                comment_msg = (
-                    f"@copilot This PR is approved but merge failed with the following error:\n\n"
-                    f"```\n{error_msg}\n```\n\n"
-                )
+                # Perform reverse merge to create conflict markers in the branch
+                success, merge_error = self._perform_reverse_merge(pr, repo_full)
                 
-                # Include diff/conflict details with base context if available
-                if diff_content:
-                    comment_msg += f"**Merge conflict details (including base branch context):**\n{diff_content}\n\n"
-                
-                comment_msg += "Please fix the merge conflicts and update the PR so it can be merged."
+                if success:
+                    comment_msg = (
+                        f"@copilot This PR is approved but merge failed due to conflicts. "
+                        f"I've merged {pr.base.ref} into {pr.head.ref} to create conflict markers in the files.\n\n"
+                        f"Original merge error: ```\n{error_msg}\n```\n\n"
+                        f"Please resolve all conflict markers (<<<<<<< HEAD, =======, >>>>>>>) in the affected files and push the changes."
+                    )
+                else:
+                    comment_msg = (
+                        f"@copilot This PR is approved but merge failed with the following error:\n\n"
+                        f"```\n{error_msg}\n```\n\n"
+                        f"Attempted to perform a reverse merge but it failed: {merge_error}\n\n"
+                        f"Please manually resolve the merge conflicts and update the PR so it can be merged."
+                    )
                 
                 pr.create_issue_comment(comment_msg)
                 if copilot_slots_tracker is not None:
@@ -3109,6 +3089,48 @@ class JediMaster:
                         self.logger.debug(f"Failed to remove merge conflict retry label {name} from PR #{pr.number}: {exc}")
         except Exception as exc:
             self.logger.error(f"Failed to clean merge conflict retry labels for PR #{getattr(pr, 'number', '?')}: {exc}")
+
+    def _perform_reverse_merge(self, pr, repo_full: str) -> Tuple[bool, Optional[str]]:
+        """
+        Perform a reverse merge: merge the base branch into the PR's head branch.
+        This creates conflict markers in the PR branch files that Copilot can resolve.
+        
+        Returns:
+            Tuple of (success: bool, error_message: Optional[str])
+        """
+        try:
+            repo = pr.base.repo
+            base_branch = pr.base.ref
+            head_branch = pr.head.ref
+            head_sha = pr.head.sha
+            
+            self.logger.info(f"Performing reverse merge: merging {base_branch} into {head_branch} for PR #{pr.number}")
+            
+            # Perform the merge using GitHub API
+            try:
+                merge_result = repo.merge(
+                    head_branch,  # The branch to merge into
+                    base_branch,  # The branch to merge from
+                    f"Merge {base_branch} into {head_branch} to resolve conflicts"
+                )
+                
+                self.logger.info(f"Successfully merged {base_branch} into {head_branch} for PR #{pr.number}")
+                return (True, None)
+                
+            except GithubException as e:
+                if e.status == 409:  # Merge conflict
+                    self.logger.info(f"Merge conflict occurred as expected during reverse merge for PR #{pr.number}")
+                    # This is actually what we want - conflict markers are now in the branch
+                    return (True, None)
+                else:
+                    error_msg = f"GitHub API error during reverse merge: {e.status} {e.data.get('message', str(e))}"
+                    self.logger.error(error_msg)
+                    return (False, error_msg)
+                    
+        except Exception as e:
+            error_msg = f"Failed to perform reverse merge: {str(e)}"
+            self.logger.error(error_msg)
+            return (False, error_msg)
 
     def _count_total_comments(self, pr) -> int:
         """Count the total number of comments, reviews, and review comments on a PR.
