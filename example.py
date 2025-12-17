@@ -297,11 +297,13 @@ async def main():
 
     # Get credentials from environment (already loaded at start of main())
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only needed for OpenAI embeddings similarity
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
-    if not github_token or not azure_foundry_endpoint:
-        print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_ENDPOINT environment variables")
+    if not github_token or not azure_foundry_project_endpoint:
+        print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_PROJECT_ENDPOINT environment variables")
         print("Either in a .env file or as system environment variables")
+        print("(Optional: AZURE_AI_FOUNDRY_ENDPOINT is only needed if using OpenAI embeddings for similarity)")
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return
 
@@ -313,7 +315,7 @@ async def main():
         repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-            async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+            async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                 await creator.create_issues(max_issues=args.create_issues_count)
         return
 
@@ -321,6 +323,7 @@ async def main():
     async with JediMaster(
         github_token,
         azure_foundry_endpoint,
+        azure_foundry_project_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,
         manage_prs=getattr(args, 'manage_prs', False),
@@ -385,10 +388,10 @@ async def main():
                 if loop_minutes < 1:
                     print("Error: Loop interval must be at least 1 minute")
                     return
-                print(f"[SimplifiedWorkflow] Running in LOOP mode: checking every {loop_minutes} minutes")
-                print(f"[SimplifiedWorkflow] Press Ctrl+C to stop")
+                print(f"Running in LOOP mode: checking every {loop_minutes} minutes")
+                print(f"Press Ctrl+C to stop")
             else:
-                print(f"[SimplifiedWorkflow] Running on: {repo_names}")
+                print(f"Running on: {repo_names}")
             
             iteration = 0
             try:
@@ -398,7 +401,7 @@ async def main():
                     if loop_minutes is not None:
                         now = datetime.now(timezone.utc)
                         print(f"\n{'='*80}")
-                        print(f"[SimplifiedWorkflow] Iteration #{iteration} at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                        print(f"Iteration #{iteration} at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                         print(f"{'='*80}")
                     
                     all_reports = []
@@ -415,7 +418,7 @@ async def main():
                         
                         # Brief summary only if there was an error
                         if not report['success']:
-                            print(f"\n[SimplifiedWorkflow] Error processing {repo_name}: {report.get('error', 'Unknown error')}")
+                            print(f"\nError processing {repo_name}: {report.get('error', 'Unknown error')}")
                     
                     # Check if all repositories have no work remaining
                     any_work_remaining = any(report.get('work_remaining', True) for report in all_reports)
@@ -427,9 +430,9 @@ async def main():
                     # If no work remains on any repository, exit loop
                     if not any_work_remaining:
                         print(f"\n{'='*80}")
-                        print(f"[SimplifiedWorkflow] All work complete!")
-                        print(f"[SimplifiedWorkflow] All PRs need human review and no unprocessed issues remain")
-                        print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
+                        print(f"All work complete!")
+                        print(f"All PRs need human review and no unprocessed issues remain")
+                        print(f"Completed {iteration} iteration(s)")
                         print(f"{'='*80}")
                         
                         # Print cumulative statistics before exiting
@@ -444,21 +447,21 @@ async def main():
                     next_run = next_run + dt.timedelta(minutes=loop_minutes)
                     
                     print(f"\n{'='*80}")
-                    print(f"[SimplifiedWorkflow] Iteration #{iteration} complete")
+                    print(f"Iteration #{iteration} complete")
                     
                     # Print cumulative statistics after each iteration
                     jedimaster.print_cumulative_stats()
                     
-                    print(f"[SimplifiedWorkflow] Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                    print(f"[SimplifiedWorkflow] Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
+                    print(f"Next run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                    print(f"Sleeping for {loop_minutes} minutes... (Ctrl+C to stop)")
                     print(f"{'='*80}")
                     
                     # Sleep for the specified interval
                     await asyncio.sleep(loop_minutes * 60)
                     
             except KeyboardInterrupt:
-                print(f"\n\n[SimplifiedWorkflow] Loop stopped by user (Ctrl+C)")
-                print(f"[SimplifiedWorkflow] Completed {iteration} iteration(s)")
+                print(f"\n\nLoop stopped by user (Ctrl+C)")
+                print(f"Completed {iteration} iteration(s)")
                 
                 # Print final cumulative statistics
                 jedimaster.print_cumulative_stats()

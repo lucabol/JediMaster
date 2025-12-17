@@ -7,6 +7,7 @@ based on LLM evaluation of issue suitability.
 import os
 import json
 import logging
+import asyncio
 from collections import Counter
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
@@ -180,8 +181,6 @@ class JediMaster:
             results.extend(await self._handle_ready_to_merge_state(pr, fresh_metadata))
             return results
 
-        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
-        
         # Refresh PR to get latest changes before fetching diff
         try:
             pr.update()
@@ -195,10 +194,16 @@ class JediMaster:
             results.append(pre_result)
             return results
 
-        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
+        # Prepare PR data as dict for agent
+        pr_data = {
+            'title': pr.title,
+            'body': pr.body or '',
+            'diff': diff_content[:5000],
+            'number': pr.number
+        }
 
         try:
-            agent_result = await self.pr_decider.evaluate_pr(pr_text)
+            agent_result = await self.pr_decider.evaluate_pr(pr_data)
         except Exception as exc:
             self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
             results.append(
@@ -968,14 +973,19 @@ class JediMaster:
             self.logger.warning(f"Failed to refresh PR #{pr.number} before review: {exc}")
         
         # Get PR diff
-        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
         diff_content, pre_result = self._fetch_pr_diff(pr, repo_full)
         if pre_result:
             print(f"  PR #{pr.number}: {pr.title[:60]} -> {pre_result.status} ({pre_result.details})")
             results.append(pre_result)
             return results
 
-        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
+        # Prepare PR data as dict for agent
+        pr_data = {
+            'title': pr.title,
+            'body': pr.body or '',
+            'diff': diff_content[:5000],
+            'number': pr.number
+        }
 
         # Call agent to evaluate PR with exponential backoff retry
         agent_result = None
@@ -984,7 +994,7 @@ class JediMaster:
         
         for attempt in range(max_retries):
             try:
-                agent_result = await self.pr_decider.evaluate_pr(pr_text)
+                agent_result = await self.pr_decider.evaluate_pr(pr_data)
                 
                 # Check if the agent result is an error (not actual feedback)
                 comment_text = agent_result.get('comment', '')
@@ -2817,9 +2827,10 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_project_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
         self.github_token = github_token
         self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
         self.github = Github(github_token)
         self.just_label = just_label
         self.use_topic_filter = use_topic_filter
@@ -2867,8 +2878,8 @@ class JediMaster:
 
     async def __aenter__(self):
         """Async context manager entry - initialize agents."""
-        self._decider = DeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
-        self._pr_decider = PRDeciderAgent(self.azure_foundry_endpoint, verbose=self.verbose)
+        self._decider = DeciderAgent(self.azure_foundry_project_endpoint, verbose=self.verbose)
+        self._pr_decider = PRDeciderAgent(self.azure_foundry_project_endpoint, verbose=self.verbose)
         await self._decider.__aenter__()
         await self._pr_decider.__aenter__()
         return self
@@ -3338,10 +3349,10 @@ class JediMaster:
                     print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_name}...")
                     # Use local similarity (simpler, no OpenAI embeddings required)
                     async with CreatorAgent(
-                        self.github_token, 
-                        self.azure_foundry_endpoint, 
-                        None, 
+                        self.github_token,
+                        self.azure_foundry_project_endpoint,
                         repo_name,
+                        azure_foundry_endpoint=self.azure_foundry_endpoint,
                         similarity_threshold=0.5,
                         use_openai_similarity=False
                     ) as creator:
@@ -3614,9 +3625,9 @@ class JediMaster:
                         from creator import CreatorAgent
                         async with CreatorAgent(
                             self.github_token,
-                            self.azure_foundry_endpoint,
-                            None,
+                            self.azure_foundry_project_endpoint,
                             repo_name,
+                            azure_foundry_endpoint=self.azure_foundry_endpoint,
                             similarity_threshold=similarity_threshold,
                             use_openai_similarity=use_openai_similarity,
                             verbose=self.verbose
@@ -3825,7 +3836,7 @@ class JediMaster:
         except Exception as e:
             print(f"\nError in workflow: {e}")
             if self.verbose:
-                self.logger.error(f"[SimplifiedWorkflow] Error in workflow: {e}")
+                self.logger.error(f"Error in workflow: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
             return {
@@ -4036,7 +4047,8 @@ async def main():
 
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only needed for OpenAI embeddings similarity
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
     if not github_token:
         print("Error: GITHUB_TOKEN environment variable is required")
@@ -4050,8 +4062,8 @@ async def main():
 
     print(f"Using GITHUB_TOKEN: {_mask_token(github_token)}")
 
-    if not azure_foundry_endpoint:
-        print("Error: AZURE_AI_FOUNDRY_ENDPOINT environment variable is required")
+    if not azure_foundry_project_endpoint:
+        print("Error: AZURE_AI_FOUNDRY_PROJECT_ENDPOINT environment variable is required")
         print("Set it in .env file or as a system environment variable")
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return 1
@@ -4078,13 +4090,14 @@ async def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                     await creator.create_issues()
             return 0
 
         async with JediMaster(
             github_token,
             azure_foundry_endpoint,
+            azure_foundry_project_endpoint,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
             manage_prs=args.manage_prs
@@ -4131,9 +4144,10 @@ async def main():
 async def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
-    if not github_token or not azure_foundry_endpoint:
-        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
+    if not github_token or not azure_foundry_project_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
@@ -4144,7 +4158,7 @@ async def process_issues_api(input_data: dict) -> dict:
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_repositories(repo_names)
             return asdict(report)
     except Exception as e:
@@ -4153,9 +4167,10 @@ async def process_issues_api(input_data: dict) -> dict:
 async def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
-    if not github_token or not azure_foundry_endpoint:
-        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_ENDPOINT in environment"}
+    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
+    if not github_token or not azure_foundry_project_endpoint:
+        return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
     try:
         just_label = _get_issue_action_from_env()
     except Exception as e:
@@ -4166,7 +4181,7 @@ async def process_user_api(input_data: dict) -> dict:
         return {"error": "Missing username in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_user(username)
             return asdict(report)
     except Exception as e:

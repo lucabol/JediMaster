@@ -10,8 +10,8 @@ import numpy as np
 import re
 from typing import List, Dict, Any, Optional, Set
 from github import Github
-from agent_framework.azure import AzureAIAgentClient
-from azure.identity.aio import DefaultAzureCredential, AzureCliCredential
+from azure.ai.projects import AIProjectClient
+from azure.identity import DefaultAzureCredential
 from reporting import format_table
 
 # Configure stdout to use UTF-8 encoding (fixes Windows console issues)
@@ -27,55 +27,51 @@ if sys.stdout.encoding != 'utf-8':
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
     
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_api_key: str = None, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_project_endpoint: str, repo_full_name: str = None, azure_foundry_endpoint: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
         self.github_token = github_token
-        self.azure_foundry_endpoint = azure_foundry_endpoint
+        self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
+        self.azure_foundry_endpoint = azure_foundry_endpoint  # Only needed for OpenAI embeddings similarity
         self.repo_full_name = repo_full_name
-        # Load configuration from environment variables
-        self.model = model or os.getenv('AZURE_AI_MODEL', 'model-router')
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
         self.verbose = verbose
         
         self._credential: Optional[DefaultAzureCredential] = None
-        self._client: Optional[AzureAIAgentClient] = None
+        self._project_client: Optional[AIProjectClient] = None
+        self._openai_client = None
+        self._agent = None
         self.github = Github(github_token)
         self.logger = logging.getLogger('jedimaster.creator')
-        
-        self.system_prompt = (
-            "You are an expert AI assistant tasked with analyzing a GitHub repository and suggesting actionable, concrete issues that could be opened to improve the project. "
-            "You MUST return exactly the requested number of issues as a JSON object with an 'issues' key containing an array of issue objects. "
-            "Focus on different categories of improvements: bug fixes, new features, code quality improvements, documentation enhancements, testing, and performance optimizations. "
-            "Each issue should be specific, actionable, and relevant to the code or documentation. "
-            "Do not include duplicate or trivial issues. Make sure each issue is distinct and addresses different aspects of the project. "
-            "IMPORTANT: Every issue body MUST include a requirement that implementation must verify all existing tests pass and add new tests for the changes. "
-            "Include this testing requirement explicitly in the body text of each issue. "
-            "CRITICAL: Return ONLY a JSON object with an 'issues' key containing an array of objects with 'title' and 'body' fields. "
-            "IMPORTANT: Keep the 'body' field concise - use a single paragraph without newlines. Do not use multi-line strings. "
-            "Example format: {'issues': [{'title': 'Issue 1', 'body': 'Single line description. Ensure all tests pass and add new tests for this functionality.'}, {'title': 'Issue 2', 'body': 'Another single line description. Verify existing tests pass and create new tests.'}]}"
-        )
 
     async def __aenter__(self):
         """Async context manager entry."""
-        # Exclude Azure CLI to avoid timeout on local machines
         self._credential = DefaultAzureCredential(exclude_cli_credential=True)
-        await self._credential.__aenter__()
-        # Don't create shared client - will create per agent call
+        
+        # Create project client (synchronous)
+        self._project_client = AIProjectClient(
+            endpoint=self.azure_foundry_project_endpoint,
+            credential=self._credential
+        )
+        
+        # Get the CreatorAgent from Foundry
+        self._agent = self._project_client.agents.get(agent_name="CreatorAgent")
+        self.logger.info(f"Retrieved CreatorAgent from Foundry: {self._agent.id}")
+        
+        # Get OpenAI client for invoking the agent
+        self._openai_client = self._project_client.get_openai_client()
+        
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
-        if self._credential:
-            await self._credential.__aexit__(exc_type, exc_val, exc_tb)
+        # Synchronous SDK doesn't need explicit cleanup
+        pass
 
-    async def _run_agent(self, agent_name: str, prompt: str) -> str:
+    async def _run_agent(self, prompt: str) -> str:
         """
-        Helper method to create and run an agent with the system prompt.
-        Creates a new client for each agent (which ChatAgent will manage).
-        Includes retry logic for transient service errors.
+        Invoke the Foundry CreatorAgent with the given prompt.
         
         Args:
-            agent_name: Name for the agent instance
             prompt: User prompt to send to the agent
             
         Returns:
@@ -84,54 +80,31 @@ class CreatorAgent:
         Raises:
             ValueError: If agent returns empty response
         """
-        import asyncio
-        import traceback
-        from agent_framework import ChatAgent
-        from agent_framework.exceptions import ServiceResponseException
-        
-        # Log endpoint and model in verbose mode
+        # Log in verbose mode
         if self.verbose:
-            self.logger.info(f"[{agent_name}] Calling Azure AI Foundry - Endpoint: {self.azure_foundry_endpoint}")
-            self.logger.info(f"[{agent_name}] Model: {self.model}")
+            self.logger.info(f"[CreatorAgent] Calling Foundry agent: {self._agent.name}")
         
-        # Retry logic for transient errors
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Create a NEW client for each ChatAgent - the ChatAgent will manage its lifecycle
-                # This is the pattern from Microsoft's docs
-                async with ChatAgent(
-                    chat_client=AzureAIAgentClient(async_credential=self._credential),
-                    instructions=self.system_prompt,
-                    model=self.model
-                ) as agent:
-                    result = await agent.run(prompt)
-                    result_text = result.text
-                    
-                    if not result_text:
-                        self.logger.error(f"Agent returned empty response. Full response: {result}")
-                        raise ValueError("Agent returned empty response")
-                    
-                    self.logger.debug(f"Agent raw response length: {len(result_text)}")
-                    return result_text
-            except ServiceResponseException as e:
-                # Log the service error
-                self.logger.warning(f"ServiceResponseException on attempt {attempt + 1}/{max_retries}: {e}")
-                
-                if attempt < max_retries - 1:
-                    # Exponential backoff: 2, 4, 8 seconds
-                    wait_time = 2 ** (attempt + 1)
-                    self.logger.info(f"Retrying in {wait_time} seconds...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    # Last attempt failed, log and re-raise
-                    self.logger.error(f"All {max_retries} attempts failed for ServiceResponseException")
-                    raise
-            except Exception as e:
-                # Log full exception details for other errors (no retry)
-                self.logger.error(f"Non-retryable exception in _run_agent: {type(e).__name__}: {e}")
-                self.logger.error(f"Full traceback:\n{traceback.format_exc()}")
-                raise
+        # Call the Foundry agent (synchronous call wrapped in async)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        # Run synchronous Foundry call in executor to avoid blocking
+        response = await loop.run_in_executor(
+            None,
+            lambda: self._openai_client.responses.create(
+                input=[{"role": "user", "content": prompt}],
+                extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+            )
+        )
+        
+        result_text = response.output_text
+        
+        if not result_text:
+            self.logger.error(f"Agent returned empty response")
+            raise ValueError("Agent returned empty response")
+        
+        self.logger.debug(f"Agent raw response length: {len(result_text)}")
+        return result_text
 
     def _shorten(self, text: Optional[str], limit: int = 80) -> str:
         if not text:
@@ -446,10 +419,9 @@ class CreatorAgent:
         )
         
         try:
-            result_text = await self._run_agent("IssueCreatorAgent", user_prompt)
+            result_text = await self._run_agent(user_prompt)
             
             self.last_conversation = {
-                "system": self.system_prompt,
                 "user": user_prompt,
                 "llm_response": result_text
             }
@@ -457,8 +429,12 @@ class CreatorAgent:
             try:
                 # Clean up the response text (remove any markdown code blocks)
                 cleaned_response = result_text.strip()
+                # Remove ```json or ``` prefix
                 if cleaned_response.startswith('```json'):
                     cleaned_response = cleaned_response[7:]
+                elif cleaned_response.startswith('```'):
+                    cleaned_response = cleaned_response[3:]
+                # Remove ``` suffix
                 if cleaned_response.endswith('```'):
                     cleaned_response = cleaned_response[:-3]
                 cleaned_response = cleaned_response.strip()
