@@ -313,6 +313,8 @@ class PRDeciderAgent:
             
             # Parse JSON response
             parsed_result = json.loads(cleaned_text)
+            self.logger.error(f"[PRDeciderAgent DEBUG] Parsed result type: {type(parsed_result)}")
+            self.logger.error(f"[PRDeciderAgent DEBUG] Parsed result: {parsed_result}")
             self.logger.debug(f"Parsed agent response: {parsed_result}")
             
             if 'decision' not in parsed_result or 'comment' not in parsed_result:
