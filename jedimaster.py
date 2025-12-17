@@ -3175,21 +3175,41 @@ class JediMaster:
                         # Merge conflicts occurred - this is what we want!
                         self.logger.info(f"Merge conflicts detected as expected for PR #{pr.number}")
                         
-                        # Add all files (including those with conflict markers)
-                        subprocess.run(
-                            ['git', 'add', '-A'],
+                        # Check which files have conflicts
+                        status_result = subprocess.run(
+                            ['git', 'status', '--porcelain'],
                             cwd=tmppath,
+                            capture_output=True,
+                            text=True,
                             check=True
                         )
+                        self.logger.debug(f"Git status after merge:\n{status_result.stdout}")
                         
-                        # Commit the merge with conflict markers
-                        subprocess.run(
-                            ['git', 'commit', '--no-edit', '-m', f'Merge {base_branch} into {head_branch} with conflicts for resolution'],
+                        # Add all conflicted files - this marks them as "resolved" in git's index
+                        # even though they still contain conflict markers in the file content
+                        add_result = subprocess.run(
+                            ['git', 'add', '-A'],
                             cwd=tmppath,
-                            check=True,
                             capture_output=True,
                             text=True
                         )
+                        
+                        if add_result.returncode != 0:
+                            self.logger.error(f"Failed to add conflicted files: {add_result.stderr}")
+                            return (False, f"Failed to stage files: {add_result.stderr}")
+                        
+                        # Now commit - git will create a merge commit because MERGE_HEAD exists
+                        # The conflict markers are now in the committed content
+                        commit_result = subprocess.run(
+                            ['git', 'commit', '--no-verify', '--no-edit'],
+                            cwd=tmppath,
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        if commit_result.returncode != 0:
+                            self.logger.error(f"Failed to commit merge: {commit_result.stderr}\nstdout: {commit_result.stdout}")
+                            return (False, f"Failed to commit merge: {commit_result.stderr}")
                         
                         # Push the merge commit with conflicts
                         subprocess.run(
