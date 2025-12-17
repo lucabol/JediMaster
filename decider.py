@@ -2,6 +2,7 @@
 DeciderAgent and PRDeciderAgent - Use Azure AI Foundry agents for evaluation.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -64,7 +65,6 @@ class DeciderAgent:
             self.logger.info(f"[DeciderAgent] Calling Foundry agent: {self._agent.name}")
         
         # Call the Foundry agent (synchronous call wrapped in async)
-        import asyncio
         loop = asyncio.get_event_loop()
         
         # Run synchronous Foundry call in executor to avoid blocking
@@ -76,7 +76,17 @@ class DeciderAgent:
             )
         )
         
-        result_text = response.output_text
+        # Debug: Check response type
+        self.logger.debug(f"Response type: {type(response)}, Response: {response}")
+        
+        # Extract text from response - handle both object and string types
+        if isinstance(response, str):
+            result_text = response
+        elif hasattr(response, 'output_text'):
+            result_text = response.output_text
+        else:
+            # Fallback: try to get text from response object
+            result_text = str(response)
         
         if not result_text:
             self.logger.error(f"Agent returned empty response")
@@ -208,7 +218,6 @@ class PRDeciderAgent:
             self.logger.info(f"[PRDeciderAgent] Calling Foundry agent: {self._agent.name}")
         
         # Call the Foundry agent (synchronous call wrapped in async)
-        import asyncio
         loop = asyncio.get_event_loop()
         
         # Run synchronous Foundry call in executor to avoid blocking
@@ -220,7 +229,17 @@ class PRDeciderAgent:
             )
         )
         
-        result_text = response.output_text
+        # Debug: Check response type
+        self.logger.debug(f"Response type: {type(response)}, Response: {response}")
+        
+        # Extract text from response - handle both object and string types
+        if isinstance(response, str):
+            result_text = response
+        elif hasattr(response, 'output_text'):
+            result_text = response.output_text
+        else:
+            # Fallback: try to get text from response object
+            result_text = str(response)
         
         if not result_text:
             self.logger.error(f"Agent returned empty response")
