@@ -241,42 +241,49 @@ class PRDeciderAgent:
         
         # Define sync function for executor
         def call_foundry_api():
-            self.logger.error(f"[PRDeciderAgent DEBUG] About to call Foundry API")
+            if self.verbose:
+                self.logger.debug(f"About to call Foundry API")
             result = self._openai_client.responses.create(
                 input=[{"role": "user", "content": prompt}],
                 extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
             )
-            self.logger.error(f"[PRDeciderAgent DEBUG] API call completed, result type: {type(result)}")
+            if self.verbose:
+                self.logger.debug(f"API call completed, result type: {type(result)}")
             return result
         
         # Run synchronous Foundry call in executor to avoid blocking
         try:
             response = await loop.run_in_executor(None, call_foundry_api)
             
-            # Debug: Check response type and attributes
-            self.logger.error(f"[PRDeciderAgent DEBUG] Response type: {type(response)}")
-            self.logger.error(f"[PRDeciderAgent DEBUG] Response dir: {dir(response)}")
-            self.logger.error(f"[PRDeciderAgent DEBUG] Response repr: {repr(response)}")
+            if self.verbose:
+                self.logger.debug(f"Response type: {type(response)}")
+                self.logger.debug(f"Response dir: {dir(response)}")
+                self.logger.debug(f"Response repr: {repr(response)}")
             
             # Extract text from response - handle both object and string types
             if isinstance(response, str):
-                self.logger.error(f"[PRDeciderAgent DEBUG] Response is string")
+                if self.verbose:
+                    self.logger.debug(f"Response is string")
                 result_text = response
             elif hasattr(response, 'output_text'):
-                self.logger.error(f"[PRDeciderAgent DEBUG] Response has output_text attribute")
+                if self.verbose:
+                    self.logger.debug(f"Response has output_text attribute")
                 result_text = response.output_text
             elif hasattr(response, 'text'):
-                self.logger.error(f"[PRDeciderAgent DEBUG] Response has text attribute")
+                if self.verbose:
+                    self.logger.debug(f"Response has text attribute")
                 result_text = response.text
             else:
                 # Fallback: try to get text from response object
-                self.logger.error(f"[PRDeciderAgent DEBUG] Using str() fallback")
+                if self.verbose:
+                    self.logger.debug(f"Using str() fallback")
                 result_text = str(response)
                 
         except Exception as e:
-            self.logger.error(f"[PRDeciderAgent DEBUG] Exception during API call: {type(e).__name__}: {e}")
-            import traceback
-            self.logger.error(f"[PRDeciderAgent DEBUG] Traceback:\n{traceback.format_exc()}")
+            self.logger.error(f"Exception during API call: {type(e).__name__}: {e}")
+            if self.verbose:
+                import traceback
+                self.logger.debug(f"Traceback:\n{traceback.format_exc()}")
             raise
         
         if not result_text:
@@ -302,20 +309,35 @@ class PRDeciderAgent:
     async def evaluate_pr(self, pr_data: Dict[str, Any]) -> Dict[str, str]:
         """Evaluate a GitHub PR using the Foundry PRDeciderAgent."""
         try:
+            if self.verbose:
+                self.logger.debug(f"Starting evaluate_pr")
+                self.logger.debug(f"pr_data type: {type(pr_data)}")
+                self.logger.debug(f"pr_data keys: {pr_data.keys() if isinstance(pr_data, dict) else 'NOT A DICT'}")
+            
             pr_text = self._format_pr_for_llm(pr_data)
+            if self.verbose:
+                self.logger.debug(f"Formatted PR text (first 200 chars): {pr_text[:200]}")
+            
             prompt = f"Please review this GitHub pull request:\n\n{pr_text}"
+            if self.verbose:
+                self.logger.debug(f"About to call _run_agent")
             
             # Use helper method to run agent
             result_text = await self._run_agent(prompt)
+            if self.verbose:
+                self.logger.debug(f"Got result_text type: {type(result_text)}")
+                self.logger.debug(f"result_text: {result_text[:500] if result_text else 'NONE'}")
             
             # Strip markdown formatting if present
             cleaned_text = self._strip_markdown_json(result_text)
+            if self.verbose:
+                self.logger.debug(f"Cleaned text: {cleaned_text[:500]}")
             
             # Parse JSON response
             parsed_result = json.loads(cleaned_text)
-            self.logger.error(f"[PRDeciderAgent DEBUG] Parsed result type: {type(parsed_result)}")
-            self.logger.error(f"[PRDeciderAgent DEBUG] Parsed result: {parsed_result}")
-            self.logger.debug(f"Parsed agent response: {parsed_result}")
+            if self.verbose:
+                self.logger.debug(f"Parsed result type: {type(parsed_result)}")
+                self.logger.debug(f"Parsed result: {parsed_result}")
             
             if 'decision' not in parsed_result or 'comment' not in parsed_result:
                 raise ValueError("Agent response missing required fields")

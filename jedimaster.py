@@ -181,8 +181,6 @@ class JediMaster:
             results.extend(await self._handle_ready_to_merge_state(pr, fresh_metadata))
             return results
 
-        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
-        
         # Refresh PR to get latest changes before fetching diff
         try:
             pr.update()
@@ -196,10 +194,16 @@ class JediMaster:
             results.append(pre_result)
             return results
 
-        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
+        # Prepare PR data as dict for agent
+        pr_data = {
+            'title': pr.title,
+            'body': pr.body or '',
+            'diff': diff_content[:5000],
+            'number': pr.number
+        }
 
         try:
-            agent_result = await self.pr_decider.evaluate_pr(pr_text)
+            agent_result = await self.pr_decider.evaluate_pr(pr_data)
         except Exception as exc:
             self.logger.error(f"PRDecider evaluation failed for PR #{pr.number}: {exc}")
             results.append(
@@ -969,14 +973,19 @@ class JediMaster:
             self.logger.warning(f"Failed to refresh PR #{pr.number} before review: {exc}")
         
         # Get PR diff
-        pr_text_header = f"Title: {pr.title}\n\nDescription:\n{pr.body or ''}\n\n"
         diff_content, pre_result = self._fetch_pr_diff(pr, repo_full)
         if pre_result:
             print(f"  PR #{pr.number}: {pr.title[:60]} -> {pre_result.status} ({pre_result.details})")
             results.append(pre_result)
             return results
 
-        pr_text = pr_text_header + f"Diff:\n{diff_content[:5000]}"
+        # Prepare PR data as dict for agent
+        pr_data = {
+            'title': pr.title,
+            'body': pr.body or '',
+            'diff': diff_content[:5000],
+            'number': pr.number
+        }
 
         # Call agent to evaluate PR with exponential backoff retry
         agent_result = None
@@ -985,7 +994,7 @@ class JediMaster:
         
         for attempt in range(max_retries):
             try:
-                agent_result = await self.pr_decider.evaluate_pr(pr_text)
+                agent_result = await self.pr_decider.evaluate_pr(pr_data)
                 
                 # Check if the agent result is an error (not actual feedback)
                 comment_text = agent_result.get('comment', '')
