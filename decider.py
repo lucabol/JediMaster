@@ -68,25 +68,40 @@ class DeciderAgent:
         loop = asyncio.get_event_loop()
         
         # Run synchronous Foundry call in executor to avoid blocking
-        response = await loop.run_in_executor(
-            None,
-            lambda: self._openai_client.responses.create(
-                input=[{"role": "user", "content": prompt}],
-                extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._openai_client.responses.create(
+                    input=[{"role": "user", "content": prompt}],
+                    extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+                )
             )
-        )
-        
-        # Debug: Check response type
-        self.logger.debug(f"Response type: {type(response)}, Response: {response}")
-        
-        # Extract text from response - handle both object and string types
-        if isinstance(response, str):
-            result_text = response
-        elif hasattr(response, 'output_text'):
-            result_text = response.output_text
-        else:
-            # Fallback: try to get text from response object
-            result_text = str(response)
+            
+            # Debug: Check response type and attributes
+            self.logger.error(f"[DeciderAgent DEBUG] Response type: {type(response)}")
+            self.logger.error(f"[DeciderAgent DEBUG] Response dir: {dir(response)}")
+            self.logger.error(f"[DeciderAgent DEBUG] Response repr: {repr(response)}")
+            
+            # Extract text from response - handle both object and string types
+            if isinstance(response, str):
+                self.logger.error(f"[DeciderAgent DEBUG] Response is string")
+                result_text = response
+            elif hasattr(response, 'output_text'):
+                self.logger.error(f"[DeciderAgent DEBUG] Response has output_text attribute")
+                result_text = response.output_text
+            elif hasattr(response, 'text'):
+                self.logger.error(f"[DeciderAgent DEBUG] Response has text attribute")
+                result_text = response.text
+            else:
+                # Fallback: try to get text from response object
+                self.logger.error(f"[DeciderAgent DEBUG] Using str() fallback")
+                result_text = str(response)
+                
+        except Exception as e:
+            self.logger.error(f"[DeciderAgent DEBUG] Exception during API call: {type(e).__name__}: {e}")
+            import traceback
+            self.logger.error(f"[DeciderAgent DEBUG] Traceback:\n{traceback.format_exc()}")
+            raise
         
         if not result_text:
             self.logger.error(f"Agent returned empty response")
@@ -221,25 +236,40 @@ class PRDeciderAgent:
         loop = asyncio.get_event_loop()
         
         # Run synchronous Foundry call in executor to avoid blocking
-        response = await loop.run_in_executor(
-            None,
-            lambda: self._openai_client.responses.create(
-                input=[{"role": "user", "content": prompt}],
-                extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._openai_client.responses.create(
+                    input=[{"role": "user", "content": prompt}],
+                    extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+                )
             )
-        )
-        
-        # Debug: Check response type
-        self.logger.debug(f"Response type: {type(response)}, Response: {response}")
-        
-        # Extract text from response - handle both object and string types
-        if isinstance(response, str):
-            result_text = response
-        elif hasattr(response, 'output_text'):
-            result_text = response.output_text
-        else:
-            # Fallback: try to get text from response object
-            result_text = str(response)
+            
+            # Debug: Check response type and attributes
+            self.logger.error(f"[PRDeciderAgent DEBUG] Response type: {type(response)}")
+            self.logger.error(f"[PRDeciderAgent DEBUG] Response dir: {dir(response)}")
+            self.logger.error(f"[PRDeciderAgent DEBUG] Response repr: {repr(response)}")
+            
+            # Extract text from response - handle both object and string types
+            if isinstance(response, str):
+                self.logger.error(f"[PRDeciderAgent DEBUG] Response is string")
+                result_text = response
+            elif hasattr(response, 'output_text'):
+                self.logger.error(f"[PRDeciderAgent DEBUG] Response has output_text attribute")
+                result_text = response.output_text
+            elif hasattr(response, 'text'):
+                self.logger.error(f"[PRDeciderAgent DEBUG] Response has text attribute")
+                result_text = response.text
+            else:
+                # Fallback: try to get text from response object
+                self.logger.error(f"[PRDeciderAgent DEBUG] Using str() fallback")
+                result_text = str(response)
+                
+        except Exception as e:
+            self.logger.error(f"[PRDeciderAgent DEBUG] Exception during API call: {type(e).__name__}: {e}")
+            import traceback
+            self.logger.error(f"[PRDeciderAgent DEBUG] Traceback:\n{traceback.format_exc()}")
+            raise
         
         if not result_text:
             self.logger.error(f"Agent returned empty response")
