@@ -67,15 +67,19 @@ class DeciderAgent:
         # Call the Foundry agent (synchronous call wrapped in async)
         loop = asyncio.get_event_loop()
         
+        # Define sync function for executor
+        def call_foundry_api():
+            self.logger.error(f"[DeciderAgent DEBUG] About to call Foundry API")
+            result = self._openai_client.responses.create(
+                input=[{"role": "user", "content": prompt}],
+                extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+            )
+            self.logger.error(f"[DeciderAgent DEBUG] API call completed, result type: {type(result)}")
+            return result
+        
         # Run synchronous Foundry call in executor to avoid blocking
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._openai_client.responses.create(
-                    input=[{"role": "user", "content": prompt}],
-                    extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
-                )
-            )
+            response = await loop.run_in_executor(None, call_foundry_api)
             
             # Debug: Check response type and attributes
             self.logger.error(f"[DeciderAgent DEBUG] Response type: {type(response)}")
@@ -235,15 +239,19 @@ class PRDeciderAgent:
         # Call the Foundry agent (synchronous call wrapped in async)
         loop = asyncio.get_event_loop()
         
+        # Define sync function for executor
+        def call_foundry_api():
+            self.logger.error(f"[PRDeciderAgent DEBUG] About to call Foundry API")
+            result = self._openai_client.responses.create(
+                input=[{"role": "user", "content": prompt}],
+                extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
+            )
+            self.logger.error(f"[PRDeciderAgent DEBUG] API call completed, result type: {type(result)}")
+            return result
+        
         # Run synchronous Foundry call in executor to avoid blocking
         try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: self._openai_client.responses.create(
-                    input=[{"role": "user", "content": prompt}],
-                    extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
-                )
-            )
+            response = await loop.run_in_executor(None, call_foundry_api)
             
             # Debug: Check response type and attributes
             self.logger.error(f"[PRDeciderAgent DEBUG] Response type: {type(response)}")

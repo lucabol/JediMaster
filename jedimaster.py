@@ -7,6 +7,7 @@ based on LLM evaluation of issue suitability.
 import os
 import json
 import logging
+import asyncio
 from collections import Counter
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
