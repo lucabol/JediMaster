@@ -69,12 +69,14 @@ class DeciderAgent:
         
         # Define sync function for executor
         def call_foundry_api():
-            self.logger.error(f"[DeciderAgent DEBUG] About to call Foundry API")
+            if self.verbose:
+                self.logger.error(f"[DeciderAgent DEBUG] About to call Foundry API")
             result = self._openai_client.responses.create(
                 input=[{"role": "user", "content": prompt}],
                 extra_body={"agent": {"name": self._agent.name, "type": "agent_reference"}}
             )
-            self.logger.error(f"[DeciderAgent DEBUG] API call completed, result type: {type(result)}")
+            if self.verbose:
+                self.logger.error(f"[DeciderAgent DEBUG] API call completed, result type: {type(result)}")
             return result
         
         # Run synchronous Foundry call in executor to avoid blocking
@@ -82,29 +84,35 @@ class DeciderAgent:
             response = await loop.run_in_executor(None, call_foundry_api)
             
             # Debug: Check response type and attributes
-            self.logger.error(f"[DeciderAgent DEBUG] Response type: {type(response)}")
-            self.logger.error(f"[DeciderAgent DEBUG] Response dir: {dir(response)}")
-            self.logger.error(f"[DeciderAgent DEBUG] Response repr: {repr(response)}")
+            if self.verbose:
+                self.logger.error(f"[DeciderAgent DEBUG] Response type: {type(response)}")
+                self.logger.error(f"[DeciderAgent DEBUG] Response dir: {dir(response)}")
+                self.logger.error(f"[DeciderAgent DEBUG] Response repr: {repr(response)}")
             
             # Extract text from response - handle both object and string types
             if isinstance(response, str):
-                self.logger.error(f"[DeciderAgent DEBUG] Response is string")
+                if self.verbose:
+                    self.logger.error(f"[DeciderAgent DEBUG] Response is string")
                 result_text = response
             elif hasattr(response, 'output_text'):
-                self.logger.error(f"[DeciderAgent DEBUG] Response has output_text attribute")
+                if self.verbose:
+                    self.logger.error(f"[DeciderAgent DEBUG] Response has output_text attribute")
                 result_text = response.output_text
             elif hasattr(response, 'text'):
-                self.logger.error(f"[DeciderAgent DEBUG] Response has text attribute")
+                if self.verbose:
+                    self.logger.error(f"[DeciderAgent DEBUG] Response has text attribute")
                 result_text = response.text
             else:
                 # Fallback: try to get text from response object
-                self.logger.error(f"[DeciderAgent DEBUG] Using str() fallback")
+                if self.verbose:
+                    self.logger.error(f"[DeciderAgent DEBUG] Using str() fallback")
                 result_text = str(response)
                 
         except Exception as e:
-            self.logger.error(f"[DeciderAgent DEBUG] Exception during API call: {type(e).__name__}: {e}")
-            import traceback
-            self.logger.error(f"[DeciderAgent DEBUG] Traceback:\n{traceback.format_exc()}")
+            if self.verbose:
+                self.logger.error(f"[DeciderAgent DEBUG] Exception during API call: {type(e).__name__}: {e}")
+                import traceback
+                self.logger.error(f"[DeciderAgent DEBUG] Traceback:\n{traceback.format_exc()}")
             raise
         
         if not result_text:
@@ -159,6 +167,17 @@ class DeciderAgent:
                 'decision': 'error',
                 'reasoning': f'Error: {str(e)}'
             }
+
+    def _strip_markdown_json(self, text: str) -> str:
+        """Remove markdown code block formatting from JSON response."""
+        text = text.strip()
+        if text.startswith("```json"):
+            text = text[7:]  # Remove ```json
+        elif text.startswith("```"):
+            text = text[3:]  # Remove ```
+        if text.endswith("```"):
+            text = text[:-3]  # Remove trailing ```
+        return text.strip()
 
     def _format_issue_for_llm(self, issue_data: Dict[str, Any]) -> str:
         """Format issue data for LLM prompt."""
@@ -294,14 +313,26 @@ class PRDeciderAgent:
         return result_text
 
     def _strip_markdown_json(self, text: str) -> str:
-        """Strip markdown code block formatting from JSON response."""
+        """Strip markdown code block formatting from JSON response and extract JSON."""
         text = text.strip()
-        # Remove ```json or ``` prefix
+        
+        # Try to find JSON in markdown code blocks first
+        import re
+        # Look for ```json...``` or ```...``` blocks
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if code_block_match:
+            return code_block_match.group(1).strip()
+        
+        # If no code block, look for raw JSON object anywhere in the text
+        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', text, re.DOTALL)
+        if json_match:
+            return json_match.group(0).strip()
+        
+        # Fallback: try basic markdown stripping
         if text.startswith('```json'):
             text = text[7:]
         elif text.startswith('```'):
             text = text[3:]
-        # Remove ``` suffix
         if text.endswith('```'):
             text = text[:-3]
         return text.strip()

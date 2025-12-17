@@ -3836,7 +3836,7 @@ class JediMaster:
         except Exception as e:
             print(f"\nError in workflow: {e}")
             if self.verbose:
-                self.logger.error(f"[SimplifiedWorkflow] Error in workflow: {e}")
+                self.logger.error(f"Error in workflow: {e}")
                 import traceback
                 self.logger.error(traceback.format_exc())
             return {
