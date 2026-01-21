@@ -37,11 +37,10 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
 
    Required environment variables:
    - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
-   - `AZURE_AI_FOUNDRY_ENDPOINT`: Your Azure AI Foundry project endpoint
+   - `AZURE_AI_FOUNDRY_ENDPOINT`: Your Azure AI Foundry endpoint for chat completions
+   - `AZURE_AI_FOUNDRY_PROJECT_ENDPOINT`: Your Azure AI Foundry project endpoint for agents
 
    Optional configuration:
-   - `AZURE_AI_MODEL`: Azure AI Foundry model to use (default: `model-router`)
-     - Examples: `model-router`, `gpt-4`, `gpt-4o`
    - `MAX_COPILOT_SLOTS`: Maximum concurrent Copilot assignments (default: 10)
    - `MAX_COMMENTS`: Maximum PR comments before escalating to human (default: 35)
    - `CREATE_ISSUES`: Enable AI-powered issue creation (0=disabled, 1=enabled, default: 0)
@@ -58,7 +57,7 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
    # .env file (recommended)
    GITHUB_TOKEN=your_github_token
    AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
-   AZURE_AI_MODEL=model-router  # Optional: defaults to model-router
+   AZURE_AI_FOUNDRY_PROJECT_ENDPOINT=https://your-project.services.ai.azure.com/api/projects/YourProject
    
    # Optional orchestration settings
    MAX_COPILOT_SLOTS=10
