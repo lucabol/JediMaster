@@ -2807,9 +2807,8 @@ class JediMaster:
                 status='error',
                 error_message=str(e)
             )
-    def __init__(self, github_token: str, azure_foundry_endpoint: str, azure_foundry_project_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_project_endpoint: str, just_label: bool = False, use_topic_filter: bool = True, manage_prs: bool = False, verbose: bool = False):
         self.github_token = github_token
-        self.azure_foundry_endpoint = azure_foundry_endpoint
         self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
         self.github = Github(github_token)
         self.just_label = just_label
@@ -3500,7 +3499,6 @@ class JediMaster:
                         self.github_token,
                         self.azure_foundry_project_endpoint,
                         repo_name,
-                        azure_foundry_endpoint=self.azure_foundry_endpoint,
                         similarity_threshold=0.5,
                         use_openai_similarity=False
                     ) as creator:
@@ -3849,7 +3847,6 @@ class JediMaster:
                             self.github_token,
                             self.azure_foundry_project_endpoint,
                             repo_name,
-                            azure_foundry_endpoint=self.azure_foundry_endpoint,
                             similarity_threshold=similarity_threshold,
                             use_openai_similarity=use_openai_similarity,
                             verbose=self.verbose
@@ -4269,7 +4266,6 @@ async def main():
 
     # Get credentials from environment (either from .env or system environment)
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only needed for OpenAI embeddings similarity
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
     if not github_token:
@@ -4312,13 +4308,12 @@ async def main():
                     print(f"Using OpenAI embeddings with similarity threshold: {similarity_threshold}")
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
-                async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                     await creator.create_issues(max_issues=args.create_issues)
             return 0
 
         async with JediMaster(
             github_token,
-            azure_foundry_endpoint,
             azure_foundry_project_endpoint,
             just_label=args.just_label,
             use_topic_filter=use_topic_filter,
@@ -4366,7 +4361,6 @@ async def main():
 async def process_issues_api(input_data: dict) -> dict:
     """API function to process all issues from a list of repositories via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
     if not github_token or not azure_foundry_project_endpoint:
         return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
@@ -4380,7 +4374,7 @@ async def process_issues_api(input_data: dict) -> dict:
         return {"error": "Missing or invalid repo_names (should be a list) in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_repositories(repo_names)
             return asdict(report)
     except Exception as e:
@@ -4389,7 +4383,6 @@ async def process_issues_api(input_data: dict) -> dict:
 async def process_user_api(input_data: dict) -> dict:
     """API function to process all repositories for a user via Azure Functions or other callers."""
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only for OpenAI embeddings
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
     if not github_token or not azure_foundry_project_endpoint:
         return {"error": "Missing GITHUB_TOKEN or AZURE_AI_FOUNDRY_PROJECT_ENDPOINT in environment"}
@@ -4403,7 +4396,7 @@ async def process_user_api(input_data: dict) -> dict:
         return {"error": "Missing username in input"}
     
     try:
-        async with JediMaster(github_token, azure_foundry_endpoint, azure_foundry_project_endpoint, just_label=just_label) as jm:
+        async with JediMaster(github_token, azure_foundry_project_endpoint, just_label=just_label) as jm:
             report = await jm.process_user(username)
             return asdict(report)
     except Exception as e:

@@ -27,10 +27,9 @@ if sys.stdout.encoding != 'utf-8':
 class CreatorAgent:
     """Agent that uses LLM to suggest and open new GitHub issues."""
     
-    def __init__(self, github_token: str, azure_foundry_project_endpoint: str, repo_full_name: str = None, azure_foundry_endpoint: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
+    def __init__(self, github_token: str, azure_foundry_project_endpoint: str, repo_full_name: str = None, model: str = None, similarity_threshold: float = 0.9, use_openai_similarity: bool = False, verbose: bool = False):
         self.github_token = github_token
         self.azure_foundry_project_endpoint = azure_foundry_project_endpoint
-        self.azure_foundry_endpoint = azure_foundry_endpoint  # Only needed for OpenAI embeddings similarity
         self.repo_full_name = repo_full_name
         self.similarity_threshold = similarity_threshold
         self.use_openai_similarity = use_openai_similarity
@@ -244,36 +243,20 @@ class CreatorAgent:
 
 
     async def _get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for a list of texts using Azure OpenAI (not through Agent Framework)."""
+        """Get embeddings for a list of texts using the Foundry project's OpenAI client."""
         try:
-            # Import Azure OpenAI client for embeddings only
-            from openai import AsyncAzureOpenAI
-            from azure.identity import get_bearer_token_provider
+            import asyncio
+            loop = asyncio.get_event_loop()
             
-            # Parse endpoint to get base URL
-            import urllib.parse
-            parsed = urllib.parse.urlparse(self.azure_foundry_endpoint)
-            base_endpoint = f"{parsed.scheme}://{parsed.netloc}"
-            query_params = urllib.parse.parse_qs(parsed.query)
-            api_version = query_params.get('api-version', ['2024-12-01-preview'])[0]
-            
-            # Create token provider
-            token_provider = get_bearer_token_provider(
-                self._credential, 
-                "https://cognitiveservices.azure.com/.default"
-            )
-            
-            # Create async client for embeddings
-            async with AsyncAzureOpenAI(
-                azure_endpoint=base_endpoint,
-                azure_ad_token_provider=token_provider,
-                api_version=api_version
-            ) as embeddings_client:
-                response = await embeddings_client.embeddings.create(
+            # Use the project client's OpenAI client for embeddings
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._openai_client.embeddings.create(
                     model="text-embedding-ada-002",
                     input=texts
                 )
-                return [data.embedding for data in response.data]
+            )
+            return [data.embedding for data in response.data]
         except Exception as e:
             self.logger.error(f"Failed to get embeddings: {e}")
             return []

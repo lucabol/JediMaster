@@ -15,7 +15,7 @@ app = func.FunctionApp()
 
 # Environment variable controls (all optional except tokens):
 # GITHUB_TOKEN (required)
-# AZURE_AI_FOUNDRY_ENDPOINT (required for Azure AI Foundry endpoint)
+# AZURE_AI_FOUNDRY_PROJECT_ENDPOINT (required for Azure AI Foundry project)
 # AUTOMATION_REPOS: comma-separated list owner/repo (required)
 # SCHEDULE_CRON: optional cron expression (default: every 6 hours)
 # CREATE_ISSUES: if '1' or 'true', create issues
@@ -41,7 +41,7 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
         logging.warning("[AutomateRepos] Timer is past due")
 
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')
+    azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
     repos_env = os.getenv('AUTOMATION_REPOS')
 
     if not github_token:
@@ -57,8 +57,8 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
     else:
         masked_token = "*" * token_length
     logging.info(f"[AutomateRepos] Using GitHub token: {masked_token} (length: {token_length})")
-    if not azure_foundry_endpoint:
-        logging.error("[AutomateRepos] Missing AZURE_AI_FOUNDRY_ENDPOINT – aborting")
+    if not azure_foundry_project_endpoint:
+        logging.error("[AutomateRepos] Missing AZURE_AI_FOUNDRY_PROJECT_ENDPOINT – aborting")
         return
     if not repos_env:
         logging.error("[AutomateRepos] AUTOMATION_REPOS not set – aborting")
@@ -128,7 +128,7 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             # 1. Optional issue creation (create but don't assign yet)
             if create_issues_flag:
                 try:
-                    async with CreatorAgent(github_token, azure_foundry_endpoint, None, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+                    async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                         created = await creator.create_issues(max_issues=create_count or 3)
                         repo_block['created_issues'] = created
                         summary['issue_creation'].append({'repo': repo_full, 'created': created})
@@ -147,7 +147,7 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
                     # Create a separate JediMaster instance for PR processing with appropriate manage_prs setting
                     async with JediMaster(
                         github_token,
-                        azure_foundry_endpoint,
+                        azure_foundry_project_endpoint,
                         just_label=just_label_flag,
                         use_topic_filter=not use_file_filter,
                         manage_prs=auto_merge_flag  # enable auto-merge when AUTO_MERGE is true
@@ -182,7 +182,7 @@ async def AutomateRepos(automationTimer: func.TimerRequest) -> None:
             try:
                 async with JediMaster(
                     github_token,
-                    azure_foundry_endpoint,
+                    azure_foundry_project_endpoint,
                     just_label=just_label_flag,
                     use_topic_filter=not use_file_filter,
                     manage_prs=False

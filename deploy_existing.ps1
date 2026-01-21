@@ -62,7 +62,7 @@ function Get-Opt($k,$default){ if($envMap.ContainsKey($k) -and $envMap[$k]){ ret
 
 
 $github = Require "GITHUB_TOKEN"
-$azureEndpoint = Require "AZURE_AI_FOUNDRY_ENDPOINT"
+$azureProjectEndpoint = Require "AZURE_AI_FOUNDRY_PROJECT_ENDPOINT"
 
 # Get deployment configuration from .env (required)
 $ResourceGroup = Require "RESOURCE_GROUP"
@@ -74,7 +74,7 @@ $AIResourceName = Get-Opt 'AI_RESOURCE_NAME' ''
 
 Write-Host "=== Updating Function App ($FunctionAppName) in RG $ResourceGroup ===" -ForegroundColor Cyan
 
-# Extract AI resource details from endpoint or use .env configuration
+# Extract AI resource details from project endpoint or use .env configuration
 function Get-AIResourceInfo {
     param($endpoint, $envAIResourceGroup, $envAIResourceName)
     
@@ -82,8 +82,8 @@ function Get-AIResourceInfo {
         return @{ ResourceGroup = $envAIResourceGroup; ResourceName = $envAIResourceName }
     }
     
-    # Try to extract from endpoint URL
-    if ($endpoint -match 'https://([^.]+)\.cognitiveservices\.azure\.com') {
+    # Try to extract from project endpoint URL (e.g., https://name.services.ai.azure.com/api/projects/ProjectName)
+    if ($endpoint -match 'https://([^.]+)\.services\.ai\.azure\.com') {
         $resourceName = $matches[1]
         # Use .env AI_RESOURCE_GROUP or fallback to function app RG
         $rg = if ($envAIResourceGroup) { $envAIResourceGroup } else { $ResourceGroup }
@@ -97,7 +97,7 @@ function Get-AIResourceInfo {
     return @{ ResourceGroup = $rg; ResourceName = $name }
 }
 
-$aiInfo = Get-AIResourceInfo $azureEndpoint $AIResourceGroup $AIResourceName
+$aiInfo = Get-AIResourceInfo $azureProjectEndpoint $AIResourceGroup $AIResourceName
 
 $repos            = Get-Opt 'AUTOMATION_REPOS' 'lucabol/Hello-World'
 $cronFromEnv      = Get-Opt 'SCHEDULE_CRON' '0 0 */6 * * *'
@@ -118,7 +118,7 @@ $ScheduleCron = $cronFromEnv
 # Build app settings for managed identity authentication
 $settings = @(
   "GITHUB_TOKEN=$github"
-  "AZURE_AI_FOUNDRY_ENDPOINT=$azureEndpoint"
+  "AZURE_AI_FOUNDRY_PROJECT_ENDPOINT=$azureProjectEndpoint"
   "AUTOMATION_REPOS=$repos"
   "JUST_LABEL=$justLabel"
   "PROCESS_PRS=$processPrs"

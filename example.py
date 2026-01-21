@@ -295,13 +295,11 @@ async def main():
 
     # Get credentials from environment (already loaded at start of main())
     github_token = os.getenv('GITHUB_TOKEN')
-    azure_foundry_endpoint = os.getenv('AZURE_AI_FOUNDRY_ENDPOINT')  # Optional: only needed for OpenAI embeddings similarity
     azure_foundry_project_endpoint = os.getenv('AZURE_AI_FOUNDRY_PROJECT_ENDPOINT')
 
     if not github_token or not azure_foundry_project_endpoint:
         print("Please set GITHUB_TOKEN and AZURE_AI_FOUNDRY_PROJECT_ENDPOINT environment variables")
         print("Either in a .env file or as system environment variables")
-        print("(Optional: AZURE_AI_FOUNDRY_ENDPOINT is only needed if using OpenAI embeddings for similarity)")
         print("Authentication to Azure AI Foundry will use managed identity (DefaultAzureCredential)")
         return
 
@@ -313,14 +311,13 @@ async def main():
         repo_names = args.repositories  # Now using positional argument
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
-            async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
+            async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
                 await creator.create_issues(max_issues=args.create_issues)
         return
 
     # Initialize JediMaster with async context manager
     async with JediMaster(
         github_token,
-        azure_foundry_endpoint,
         azure_foundry_project_endpoint,
         just_label=just_label,
         use_topic_filter=use_topic_filter,

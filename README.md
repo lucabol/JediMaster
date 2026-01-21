@@ -37,7 +37,6 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
 
    Required environment variables:
    - `GITHUB_TOKEN`: Your GitHub personal access token with repo permissions
-   - `AZURE_AI_FOUNDRY_ENDPOINT`: Your Azure AI Foundry endpoint for chat completions
    - `AZURE_AI_FOUNDRY_PROJECT_ENDPOINT`: Your Azure AI Foundry project endpoint for agents
 
    Optional configuration:
@@ -61,7 +60,6 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
    ```bash
    # .env file (recommended)
    GITHUB_TOKEN=your_github_token
-   AZURE_AI_FOUNDRY_ENDPOINT=https://your-project.cognitiveservices.azure.com/openai/deployments/model-router/chat/completions?api-version=2025-01-01-preview
    AZURE_AI_FOUNDRY_PROJECT_ENDPOINT=https://your-project.services.ai.azure.com/api/projects/YourProject
    
    # Optional settings
@@ -216,7 +214,6 @@ from jedimaster import JediMaster
 async def main():
     async with JediMaster(
         github_token="<token>",
-        azure_foundry_endpoint="<chat_endpoint>",
         azure_foundry_project_endpoint="<project_endpoint>",
         # Uses DefaultAzureCredential (no API key needed)
     ) as jm:
