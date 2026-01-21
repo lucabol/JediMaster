@@ -67,6 +67,12 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
    CREATE_ISSUES=0  # Set to 1 to enable AI issue creation
    ```
 
+4. **Deploy the AI agents to Azure Foundry:**
+   ```bash
+   python deploy_agents.py
+   ```
+   This deploys the three agents (`DeciderAgent`, `PRDeciderAgent`, `CreatorAgent`) defined in `foundry_agents/` to your Azure AI Foundry project.
+
 ---
 
 ## Usage
