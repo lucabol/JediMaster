@@ -4245,8 +4245,8 @@ async def main():
     parser.add_argument('--manage-prs', action='store_true',
                        help='Process pull requests through the state machine (review, merge, etc.) instead of processing issues')
 
-    parser.add_argument('--create-issues', action='store_true',
-                       help='Use CreatorAgent to suggest and open new issues in the specified repositories')
+    parser.add_argument('--create-issues', type=int, nargs='?', const=3, default=None, metavar='N',
+                       help='Use CreatorAgent to suggest and open N new issues per repository (default: 3)')
     parser.add_argument('--similarity-threshold', type=float, metavar='THRESHOLD',
                        help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9 with OpenAI embeddings, 0.5 with local similarity)')
 
@@ -4299,7 +4299,7 @@ async def main():
         use_topic_filter = not args.use_file_filter
 
         # If --create-issues is set, use CreatorAgent for each repo
-        if args.create_issues:
+        if args.create_issues is not None:
             if args.user:
                 print("--create-issues does not support --user mode. Please specify repositories explicitly.")
                 return 1
@@ -4313,7 +4313,7 @@ async def main():
                 else:
                     print(f"Using local word-based similarity detection (threshold: 0.5)")
                 async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
-                    await creator.create_issues()
+                    await creator.create_issues(max_issues=args.create_issues)
             return 0
 
         async with JediMaster(

@@ -214,10 +214,8 @@ async def main():
                        help='Use simplified workflow: process PRs first, then assign issues based on Copilot capacity')
     parser.add_argument('--loop', type=int, nargs='?', const=30, metavar='MINUTES',
                        help='Run workflow continuously, checking every N minutes (default: 30). Requires --orchestrate flag. Designed for autonomous continuous operation.')
-    parser.add_argument('--create-issues', action='store_true',
-                       help='Use CreatorAgent to suggest and open new issues in the specified repositories')
-    parser.add_argument('--create-issues-count', type=int, default=3,
-                       help='Number of issues to create per repository (default: 3)')
+    parser.add_argument('--create-issues', type=int, nargs='?', const=3, default=None, metavar='N',
+                       help='Use CreatorAgent to suggest and open N new issues per repository (default: 3)')
     parser.add_argument('--similarity-threshold', type=float, nargs='?', const=0.9, metavar='THRESHOLD',
                        help='Similarity threshold for duplicate detection when creating issues (0.0-1.0, default: 0.9 with OpenAI embeddings, 0.5 with local similarity)')
 
@@ -308,7 +306,7 @@ async def main():
         return
 
     # If --create-issues is set, use CreatorAgent for each repo
-    if getattr(args, 'create_issues', False):
+    if getattr(args, 'create_issues', None) is not None:
         if args.user:
             print("--create-issues does not support --user mode. Please specify repositories explicitly.")
             return
@@ -316,7 +314,7 @@ async def main():
         for repo_full_name in repo_names:
             print(f"\n[CreatorAgent] Suggesting and opening issues for {repo_full_name}...")
             async with CreatorAgent(github_token, azure_foundry_project_endpoint, repo_full_name, azure_foundry_endpoint=azure_foundry_endpoint, similarity_threshold=similarity_threshold, use_openai_similarity=use_openai_similarity) as creator:
-                await creator.create_issues(max_issues=args.create_issues_count)
+                await creator.create_issues(max_issues=args.create_issues)
         return
 
     # Initialize JediMaster with async context manager
