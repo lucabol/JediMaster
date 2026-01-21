@@ -315,7 +315,9 @@ instructions: |
 
 ---
 
-## Azure Functions Deployment
+## Azure Functions Deployment (Experimental)
+
+> ⚠️ **Experimental**: Azure Functions deployment is currently experimental and may not work reliably. Use local execution (`python example.py`) for production workloads.
 
 JediMaster can be deployed as an Azure Function for automated, scheduled repository management.
 
@@ -361,7 +363,7 @@ JediMaster can be deployed as an Azure Function for automated, scheduled reposit
    - Apply all settings from `.env`
    - Deploy the function code
 
-### Azure Function Environment Variables
+### Azure Function Environment Variables (Experimental)
 
 Additional variables for Azure Functions (see `.env.example` for complete list):
 
