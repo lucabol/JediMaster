@@ -269,6 +269,46 @@ JediMaster uses a sophisticated workflow to manage repositories:
 
 ---
 
+## Agent Definitions
+
+The three AI agents used by JediMaster are defined in the `foundry_agents/` folder as YAML files:
+
+| Agent | File | Purpose |
+|-------|------|---------|
+| `DeciderAgent` | `decideragent.yaml` | Evaluates GitHub issues for Copilot suitability |
+| `PRDeciderAgent` | `prdecideragent.yaml` | Reviews PRs and decides to accept or request changes |
+| `CreatorAgent` | `creatoragent.yaml` | Suggests new issues based on repository analysis |
+
+### Managing Agent Definitions
+
+**Extract agents from Azure Foundry:**
+```bash
+python extract_agents.py
+```
+This saves current agent definitions from your Azure AI Foundry project to `foundry_agents/`.
+
+**Deploy agents to Azure Foundry:**
+```bash
+# Deploy all agents
+python deploy_agents.py
+
+# Deploy a specific agent
+python deploy_agents.py --agent DeciderAgent
+
+# Dry run (show what would be deployed)
+python deploy_agents.py --dry-run
+```
+
+**YAML Definition Format:**
+```yaml
+name: DeciderAgent
+model: claude-sonnet-4-5
+instructions: |
+  Your system prompt instructions here...
+```
+
+---
+
 ## Azure Functions Deployment
 
 JediMaster can be deployed as an Azure Function for automated, scheduled repository management.
