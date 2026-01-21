@@ -3119,10 +3119,11 @@ class JediMaster:
                 tmppath = Path(tmpdir)
                 
                 try:
-                    # Clone the repository (shallow clone for speed)
+                    # Clone the repository with full history to enable proper merge commits
+                    # We need full history so git can create merge commits even when there are no conflicts
                     self.logger.debug(f"Cloning {repo_full} to {tmppath}")
                     subprocess.run(
-                        ['git', 'clone', '--depth=1', '--no-single-branch', clone_url, str(tmppath)],
+                        ['git', 'clone', clone_url, str(tmppath)],
                         check=True,
                         capture_output=True,
                         text=True
@@ -3153,15 +3154,22 @@ class JediMaster:
                     # Attempt to merge base branch into head branch
                     self.logger.debug(f"Merging {base_branch} into {head_branch}")
                     result = subprocess.run(
-                        ['git', 'merge', base_branch, '-m', f'Merge {base_branch} into {head_branch} for conflict resolution'],
+                        ['git', 'merge', base_branch, '--no-commit', '--no-ff'],
                         cwd=tmppath,
                         capture_output=True,
                         text=True
                     )
                     
                     if result.returncode == 0:
-                        # Merge succeeded without conflicts
+                        # Merge succeeded without conflicts - complete the merge
                         self.logger.info(f"Merge succeeded without conflicts for PR #{pr.number}")
+                        subprocess.run(
+                            ['git', 'commit', '-m', f'Merge {base_branch} into {head_branch}'],
+                            cwd=tmppath,
+                            check=True,
+                            capture_output=True,
+                            text=True
+                        )
                         # Push the merge commit
                         subprocess.run(
                             ['git', 'push', 'origin', head_branch],
@@ -3185,10 +3193,10 @@ class JediMaster:
                         )
                         self.logger.debug(f"Git status after merge:\n{status_result.stdout}")
                         
-                        # Add all conflicted files - this marks them as "resolved" in git's index
-                        # even though they still contain conflict markers in the file content
+                        # Stage all files including those with conflict markers
+                        # Use -u to only add modified files, not new untracked files
                         add_result = subprocess.run(
-                            ['git', 'add', '-A'],
+                            ['git', 'add', '-u'],
                             cwd=tmppath,
                             capture_output=True,
                             text=True
@@ -3198,27 +3206,44 @@ class JediMaster:
                             self.logger.error(f"Failed to add conflicted files: {add_result.stderr}")
                             return (False, f"Failed to stage files: {add_result.stderr}")
                         
-                        # Now commit - git will create a merge commit because MERGE_HEAD exists
-                        # The conflict markers are now in the committed content
+                        # Check if there's actually something to commit
+                        diff_result = subprocess.run(
+                            ['git', 'diff', '--cached', '--name-only'],
+                            cwd=tmppath,
+                            capture_output=True,
+                            text=True,
+                            check=True
+                        )
+                        
+                        if not diff_result.stdout.strip():
+                            # No changes staged - the merge may have already been done
+                            self.logger.warning(f"No changes to commit after merge for PR #{pr.number}")
+                            return (False, "No changes to commit - branch may already be up to date")
+                        
+                        # Now commit with conflict markers intact
+                        # MERGE_HEAD exists so git knows this is a merge commit
                         commit_result = subprocess.run(
-                            ['git', 'commit', '--no-verify', '--no-edit'],
+                            ['git', 'commit', '--no-verify', '--no-edit', '-m', f'Merge {base_branch} into {head_branch} with conflicts for resolution'],
                             cwd=tmppath,
                             capture_output=True,
                             text=True
                         )
                         
                         if commit_result.returncode != 0:
-                            self.logger.error(f"Failed to commit merge: {commit_result.stderr}\nstdout: {commit_result.stdout}")
+                            self.logger.error(f"Failed to commit merge:\nstderr: {commit_result.stderr}\nstdout: {commit_result.stdout}")
                             return (False, f"Failed to commit merge: {commit_result.stderr}")
                         
                         # Push the merge commit with conflicts
-                        subprocess.run(
+                        push_result = subprocess.run(
                             ['git', 'push', 'origin', head_branch],
                             cwd=tmppath,
-                            check=True,
                             capture_output=True,
                             text=True
                         )
+                        
+                        if push_result.returncode != 0:
+                            self.logger.error(f"Failed to push merge: {push_result.stderr}")
+                            return (False, f"Failed to push: {push_result.stderr}")
                         
                         self.logger.info(f"Successfully pushed merge conflicts to {head_branch} for PR #{pr.number}")
                         return (True, None)
