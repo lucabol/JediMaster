@@ -41,6 +41,7 @@ An AI-powered GitHub repository orchestrator that automatically manages issues a
    - `AZURE_AI_FOUNDRY_PROJECT_ENDPOINT`: Your Azure AI Foundry project endpoint for agents
 
    Optional configuration:
+   - `MAX_COPILOT_SLOTS`: Maximum concurrent Copilot assignments (default: 10)
    - `MAX_COMMENTS`: Maximum PR comments before escalating to human (default: 35)
    - `CREATE_ISSUES`: Enable AI-powered issue creation (0=disabled, 1=enabled, default: 0)
    - `CREATE_ISSUES_COUNT`: Number of issues to create per repository (default: 3)

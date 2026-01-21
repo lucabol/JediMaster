@@ -77,7 +77,7 @@ MERGE_ATTEMPT_LABEL_PREFIX = "copilot-merge-attempt-"
 COPILOT_STATE_LABEL_PREFIX = "copilot-state-"
 
 # Maximum number of concurrent Copilot assignments (PRs being worked on + new requests)
-MAX_COPILOT_SLOTS = 10
+MAX_COPILOT_SLOTS = int(os.getenv('MAX_COPILOT_SLOTS', '10'))
 
 # State machine states
 STATE_PENDING_REVIEW = "pending-review"
