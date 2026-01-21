@@ -77,14 +77,41 @@ def update_github_file(token: str, owner: str, repo: str, path: str, new_content
         return False
     return True
 
+def _delete_directory_contents(token: str, owner: str, repo: str, dir_path: str, logger: logging.Logger) -> list:
+    """Recursively delete all files in a directory."""
+    # Skip .github directory entirely
+    if dir_path == '.github' or dir_path.startswith('.github/'):
+        return []
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{dir_path}"
+    resp = requests.get(url, headers=_gh_headers(token))
+    deleted = []
+    if resp.status_code != 200:
+        logger.warning(f"Failed to list directory {dir_path}: {resp.status_code}")
+        return deleted
+    for item in resp.json():
+        path = item['path']
+        # Skip anything in .github
+        if path.startswith('.github/'):
+            continue
+        if item['type'] == 'file':
+            del_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+            del_resp = requests.delete(del_url, headers=_gh_headers(token), json={"message": f"Remove {path} for repo reset", "sha": item['sha']})
+            if del_resp.status_code in (200, 204):
+                deleted.append(path)
+            else:
+                logger.warning(f"Failed to delete file {path}: {del_resp.status_code}")
+        elif item['type'] == 'dir':
+            deleted.extend(_delete_directory_contents(token, owner, repo, path, logger))
+    return deleted
+
 def prune_files(token: str, owner: str, repo: str, logger: logging.Logger) -> Dict[str, Any]:
     url = f"https://api.github.com/repos/{owner}/{repo}/contents"
     resp = requests.get(url, headers=_gh_headers(token))
     deleted = []
-    skipped_dirs = []
+    deleted_dirs = []
     if resp.status_code != 200:
         logger.warning(f"Failed to list repo contents: {resp.status_code} {resp.text}")
-        return {"deleted": deleted, "skipped_dirs": skipped_dirs}
+        return {"deleted": deleted, "deleted_dirs": deleted_dirs}
     allowed = {"hello.c", ".gitignore", "README.md"}
     for item in resp.json():
         name = item['name']
@@ -99,8 +126,11 @@ def prune_files(token: str, owner: str, repo: str, logger: logging.Logger) -> Di
             else:
                 logger.warning(f"Failed to delete file {name}: {del_resp.status_code}")
         elif item['type'] == 'dir' and name != '.github':
-            skipped_dirs.append(name)
-    return {"deleted": deleted, "skipped_dirs": skipped_dirs}
+            # Recursively delete directory contents
+            dir_deleted = _delete_directory_contents(token, owner, repo, path, logger)
+            deleted.extend(dir_deleted)
+            deleted_dirs.append(name)
+    return {"deleted": deleted, "deleted_dirs": deleted_dirs}
 
 def reset_repository(token: str, full_name: str, logger: logging.Logger) -> Dict[str, Any]:
     owner, repo = full_name.split('/')
@@ -114,5 +144,5 @@ def reset_repository(token: str, full_name: str, logger: logging.Logger) -> Dict
     result['readme_updated'] = update_github_file(token, owner, repo, 'README.md', baseline_readme, 'Reset baseline README.md for repo reset', logger)
     prune = prune_files(token, owner, repo, logger)
     result['deleted_files'] = prune['deleted']
-    result['skipped_dirs'] = prune['skipped_dirs']
+    result['deleted_dirs'] = prune['deleted_dirs']
     return result
