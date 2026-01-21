@@ -66,9 +66,17 @@ def extract_agents():
         if tools:
             agent_def['tools'] = tools
         
-        # Save to YAML
+        # Save to YAML with literal block style for instructions
         filename = f"{name.lower().replace(' ', '_')}.yaml"
         filepath = os.path.join(output_dir, filename)
+        
+        # Custom representer to use literal block style for long strings
+        def str_representer(dumper, data):
+            if '\n' in data or len(data) > 80:
+                return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+            return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+        
+        yaml.add_representer(str, str_representer)
         
         with open(filepath, 'w', encoding='utf-8') as f:
             yaml.dump(agent_def, f, default_flow_style=False, allow_unicode=True, sort_keys=False, width=120)
