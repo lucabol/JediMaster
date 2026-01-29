@@ -21,7 +21,7 @@ def extract_agents():
     
     client = AIProjectClient(
         endpoint=endpoint,
-        credential=DefaultAzureCredential(exclude_cli_credential=True)
+        credential=DefaultAzureCredential()
     )
     
     # Create output directory

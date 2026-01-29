@@ -78,7 +78,7 @@ def deploy_agent(client: AIProjectClient, agent_def: dict, dry_run: bool = False
             
         except Exception as e:
             # Agent doesn't exist, create new
-            if "not found" in str(e).lower() or "404" in str(e):
+            if "not_found" in str(e).lower() or "not found" in str(e).lower() or "404" in str(e):
                 print(f"  Agent does not exist, creating...")
                 agent = client.agents.create(
                     name=name,
@@ -138,7 +138,7 @@ def main():
     print("\nConnecting to Azure AI Foundry...")
     client = AIProjectClient(
         endpoint=endpoint,
-        credential=DefaultAzureCredential(exclude_cli_credential=True)
+        credential=DefaultAzureCredential()
     )
     
     # Deploy agents
