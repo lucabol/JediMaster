@@ -26,7 +26,7 @@ def test_foundry_connection():
     try:
         # Test authentication
         print("\n1. Testing authentication...")
-        credential = DefaultAzureCredential(exclude_cli_credential=True)
+        credential = DefaultAzureCredential()
         # Try to get a token for Azure AI services
         token = credential.get_token("https://cognitiveservices.azure.com/.default")
         print(f"✅ Authentication successful")

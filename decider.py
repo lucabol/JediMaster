@@ -25,7 +25,7 @@ class DeciderAgent:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._credential = DefaultAzureCredential(exclude_cli_credential=True)
+        self._credential = DefaultAzureCredential()
         
         # Create project client (synchronous)
         self._project_client = AIProjectClient(
@@ -217,7 +217,7 @@ class PRDeciderAgent:
 
     async def __aenter__(self):
         """Async context manager entry."""
-        self._credential = DefaultAzureCredential(exclude_cli_credential=True)
+        self._credential = DefaultAzureCredential()
         
         # Create project client (synchronous)
         self._project_client = AIProjectClient(

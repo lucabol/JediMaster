@@ -12,7 +12,7 @@ print(f"Creating client...")
 
 client = AIProjectClient(
     endpoint=endpoint, 
-    credential=DefaultAzureCredential(exclude_cli_credential=True)
+    credential=DefaultAzureCredential()
 )
 
 print(f"Client created: {client}")
